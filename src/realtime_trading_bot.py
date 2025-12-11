@@ -12,7 +12,6 @@ import os
 
 from src.signal_generator import SignalGenerator, TradingSignal
 from src.discord_bot_handler import DiscordBotHandler
-from src.notification_handler import NotificationHandler
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -33,12 +32,11 @@ class RealtimeTradingBot:
         self.client = Client(self.api_key, self.api_secret)
         
         self.signal_generator = SignalGenerator(model=model, device=device)
-        self.discord_handler = DiscordBotHandler()
-        self.notifier = NotificationHandler()
+        self.discord_handler = DiscordBotHandler()  # 只保留 Discord
         
         # 監控配置
         self.symbols = ['BTC', 'ETH', 'BNB', 'XRP', 'ADA', 'SOL', 'DOGE', 'MATIC', 'AVAX', 'LINK']
-        self.interval = '1h'  # 1小時間隔
+        self.interval = '1h'  # 1小時間間隔
         self.lookback_period = 60  # 60根K線
         self.check_frequency = 300  # 5分鐘檢查一次
         
@@ -132,8 +130,8 @@ class RealtimeTradingBot:
             should_notify = self._should_notify(symbol, signal)
             
             if should_notify:
-                # 發送通知
-                await self._send_signal_notification(signal)
+                # 發送通知（只有 Discord）
+                await self._send_discord_signal(signal)
                 
                 # 更新歷史
                 self.signal_history[symbol] = signal
@@ -174,19 +172,6 @@ class RealtimeTradingBot:
             return True
         
         return False
-    
-    async def _send_signal_notification(self, signal: TradingSignal):
-        """
-        發送交易信號通知
-        """
-        # Discord 通知
-        await self._send_discord_signal(signal)
-        
-        # Telegram 通知
-        self._send_telegram_signal(signal)
-        
-        # Email 通知
-        self._send_email_signal(signal)
     
     async def _send_discord_signal(self, signal: TradingSignal):
         """
@@ -248,96 +233,14 @@ class RealtimeTradingBot:
         except Exception as e:
             logger.error(f"Error sending Discord signal: {e}")
     
-    def _send_telegram_signal(self, signal: TradingSignal):
-        """
-        發送 Telegram 交易信號
-        """
-        try:
-            message = f"""
-<b>{signal.signal_type.value}</b>
-
-<b>{signal.symbol}</b> Trading Signal
-
-💰 Current Price: ${signal.current_price:.2f}
-📍 Entry Price: ${signal.entry_price:.2f}
-📈 Take Profit: ${signal.take_profit:.2f}
-📉 Stop Loss: ${signal.stop_loss:.2f}
-
-📊 Trend: {signal.trend_direction.value}
-💪 Trend Strength: {signal.trend_strength*100:.1f}%
-🎯 Confidence: {signal.confidence*100:.1f}%
-⚡ Momentum: {signal.momentum_score:.2f}
-💹 Predicted Price: ${signal.predicted_next_price:.2f}
-📈 Predicted Volatility: {signal.predicted_volatility*100:.2f}%
-
-⚖️ Risk/Reward: {signal.risk_reward_ratio:.2f}
-🚀 Breakout: {'✅ Yes' if signal.is_breakout else '❌ No'}
-
-🔍 RSI: {signal.technical_indicators.get('rsi', 0):.1f}
-
-Time: {signal.timestamp.strftime('%Y-%m-%d %H:%M:%S')}
-            """
-            
-            self.notifier.send_telegram_notification(message)
-            logger.info(f"Telegram signal sent for {signal.symbol}")
-        
-        except Exception as e:
-            logger.error(f"Error sending Telegram signal: {e}")
-    
-    def _send_email_signal(self, signal: TradingSignal):
-        """
-        發送 Email 交易信號
-        """
-        try:
-            html_message = f"""
-<html>
-<body>
-<h2>{signal.signal_type.value}</h2>
-<h3>{signal.symbol} Trading Signal</h3>
-
-<table border="1" cellpadding="10">
-<tr><td><b>Current Price</b></td><td>${signal.current_price:.2f}</td></tr>
-<tr><td><b>Entry Price</b></td><td>${signal.entry_price:.2f}</td></tr>
-<tr><td><b>Take Profit</b></td><td>${signal.take_profit:.2f}</td></tr>
-<tr><td><b>Stop Loss</b></td><td>${signal.stop_loss:.2f}</td></tr>
-<tr><td><b>Risk/Reward Ratio</b></td><td>{signal.risk_reward_ratio:.2f}</td></tr>
-<tr><td><b>Confidence</b></td><td>{signal.confidence*100:.1f}%</td></tr>
-<tr><td><b>Trend</b></td><td>{signal.trend_direction.value}</td></tr>
-<tr><td><b>Trend Strength</b></td><td>{signal.trend_strength*100:.1f}%</td></tr>
-<tr><td><b>Predicted Next Price</b></td><td>${signal.predicted_next_price:.2f}</td></tr>
-<tr><td><b>Predicted Volatility</b></td><td>{signal.predicted_volatility*100:.2f}%</td></tr>
-<tr><td><b>Momentum Score</b></td><td>{signal.momentum_score:.2f}</td></tr>
-<tr><td><b>Sentiment Score</b></td><td>{signal.sentiment_score:.2f}</td></tr>
-<tr><td><b>Is Breakout</b></td><td>{'Yes' if signal.is_breakout else 'No'}</td></tr>
-</table>
-
-<h3>Technical Indicators</h3>
-<ul>
-<li>RSI: {signal.technical_indicators.get('rsi', 'N/A')}</li>
-<li>MACD: {signal.technical_indicators.get('macd', 'N/A')}</li>
-<li>Stochastic K: {signal.technical_indicators.get('stochastic_k', 'N/A')}</li>
-<li>ATR: {signal.technical_indicators.get('atr', 'N/A')}</li>
-</ul>
-
-<p>Time: {signal.timestamp.strftime('%Y-%m-%d %H:%M:%S')}</p>
-</body>
-</html>
-            """
-            
-            self.notifier.send_email_notification(
-                subject=f"[SIGNAL] {signal.symbol} - {signal.signal_type.value}",
-                message=html_message
-            )
-            logger.info(f"Email signal sent for {signal.symbol}")
-        
-        except Exception as e:
-            logger.error(f"Error sending email signal: {e}")
-    
     async def run_monitoring_loop(self):
         """
         運行持續監控循環
         """
         logger.info("Starting real-time trading bot monitoring...")
+        logger.info("📢 Discord Bot 通知已啓用")
+        logger.info("❌ Email 通知已禁用")
+        logger.info("❌ Telegram 通知已禁用")
         
         while True:
             try:
