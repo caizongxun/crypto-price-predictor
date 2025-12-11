@@ -79,26 +79,36 @@ def train_model_optimized(
             logger.error(f"Failed to fetch data for {symbol}")
             return False
         
-        logger.info(f"✓ Fetched {len(df)} candles for {trading_pair}")
+        logger.info(f"[OK] Fetched {len(df)} candles for {trading_pair}")
         
         # Step 2: Add technical indicators
         logger.info("\n[Step 2/5] Adding technical indicators...")
         df = data_fetcher.add_technical_indicators(df)
-        logger.info(f"✓ Added technical indicators for {len(df)} rows")
+        logger.info(f"[OK] Added technical indicators for {len(df)} rows")
         
         # Step 3: Prepare ML features
         logger.info("\n[Step 3/5] Preparing ML features...")
-        features_dict = data_fetcher.prepare_ml_features(df, lookback=lookback)
-        X = features_dict['X']
-        y = features_dict['y']
+        features_result = data_fetcher.prepare_ml_features(df, lookback=lookback)
+        
+        # Handle both dict and tuple returns for backward compatibility
+        if isinstance(features_result, dict):
+            X = features_result['X']
+            y = features_result['y']
+        elif isinstance(features_result, tuple):
+            # If it returns tuple (X, y, scaler) or similar
+            X = features_result[0]
+            y = features_result[1]
+        else:
+            logger.error("Unexpected features_result type")
+            return False
         
         if X is None or y is None:
             logger.error("Failed to prepare features")
             return False
         
-        logger.info(f"✓ Prepared {X.shape[0]} sequences")
-        logger.info(f"  - X shape: {X.shape}")
-        logger.info(f"  - y shape: {y.shape}")
+        logger.info(f"[OK] Prepared {X.shape[0]} sequences")
+        logger.info(f"    - X shape: {X.shape}")
+        logger.info(f"    - y shape: {y.shape}")
         
         # Step 4: Initialize trainer and train model
         logger.info("\n[Step 4/5] Training ensemble model with attention mechanisms...")
@@ -119,12 +129,12 @@ def train_model_optimized(
         # Save symbol-specific model
         symbol_model_path = model_dir / f"{symbol}_lstm_model.pth"
         torch.save(model.state_dict(), symbol_model_path)
-        logger.info(f"✓ Model saved to {symbol_model_path}")
+        logger.info(f"[OK] Model saved to {symbol_model_path}")
         
         # Save as best model for backward compatibility
         best_model_path = model_dir / 'best_lstm_model.pth'
         torch.save(model.state_dict(), best_model_path)
-        logger.info(f"✓ Model also saved as best_lstm_model.pth")
+        logger.info(f"[OK] Model also saved as best_lstm_model.pth")
         
         # Training summary
         logger.info("\n" + "="*70)
@@ -137,13 +147,13 @@ def train_model_optimized(
         logger.info(f"Model Location: {symbol_model_path}")
         logger.info("="*70)
         logger.info("\nKey Features Implemented:")
-        logger.info("  ✓ Bidirectional LSTM + GRU ensemble")
-        logger.info("  ✓ Multi-head attention mechanism")
-        logger.info("  ✓ Huber loss (robust to outliers)")
-        logger.info("  ✓ Early stopping with patience")
-        logger.info("  ✓ Mixed precision training (GPU)")
-        logger.info("  ✓ Gradient clipping")
-        logger.info("  ✓ Cosine annealing learning rate schedule")
+        logger.info("  [OK] Bidirectional LSTM + GRU ensemble")
+        logger.info("  [OK] Multi-head attention mechanism")
+        logger.info("  [OK] Huber loss (robust to outliers)")
+        logger.info("  [OK] Early stopping with patience")
+        logger.info("  [OK] Mixed precision training (GPU)")
+        logger.info("  [OK] Gradient clipping")
+        logger.info("  [OK] Cosine annealing learning rate schedule")
         logger.info("="*70 + "\n")
         
         return True
