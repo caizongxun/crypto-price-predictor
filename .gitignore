@@ -50,7 +50,7 @@ data/historical/*
 # Models
 models/saved_models/*
 !models/saved_models/.gitkeep
-
+!models/saved_models/*.pth
 # Database
 *.db
 *.sqlite
