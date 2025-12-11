@@ -14,10 +14,10 @@ python-dotenv==1.0.0
 requests==2.31.0
 aiohttp==3.9.1
 websockets==12.0
-pandas-ta==0.3.14b0
-ta-lib==0.4.28
+# ta-lib==0.4.28  # commented out: requires system C libraries, using custom technical indicators instead
 pytz==2023.3
 apscheduler==3.10.4
-coingecko==2.0.4
-python-telegram-bot==20.3
-redis==5.0.1
+# coingecko==2.0.4  # commented out: version not available, we use Binance API instead
+# redis==5.0.1  # commented out: not required for realtime bot
+# pandas-ta==0.3.14b0  # commented out: no compatible wheel for Python 3.11
+# python-telegram-bot==20.3  # commented out: Telegram notifications disabled
