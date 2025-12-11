@@ -14,7 +14,7 @@ python-dotenv==1.0.0
 requests==2.31.0
 aiohttp==3.9.1
 websockets==12.0
-ta-lib==0.4.28
+# ta-lib==0.4.28  # commented out: requires system C libraries, using custom technical indicators instead
 pytz==2023.3
 apscheduler==3.10.4
 # coingecko==2.0.4  # commented out: version not available, we use Binance API instead
