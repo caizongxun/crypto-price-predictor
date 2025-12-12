@@ -1,15 +1,15 @@
-import google.generativeai as genai
+import os
 import logging
 import re
 from typing import Dict, Optional
 from dataclasses import dataclass
-import time
+from groq import Groq
 
 logger = logging.getLogger(__name__)
 
 @dataclass
 class GeminiAnalysis:
-    """Gemini AI 分析結果"""
+    """AI 分析結果 (保留原名以維持代碼兼容性)"""
     is_valid: bool
     validity_score: float
     entry_price: Optional[float]
@@ -22,31 +22,27 @@ class GeminiAnalysis:
 
 class GeminiSignalValidator:
     """
-    使用 Gemini API 驗證交易信號
+    使用 Groq API (Llama-3-70b) 驗證交易信號
+    (類名保留為 GeminiSignalValidator 以維持與 main.py 的兼容性)
     """
     
     def __init__(self, api_key: str):
         """
-        初始化 Gemini 驗證器
+        初始化 Groq 驗證器
+        注意: 這裡傳入的 api_key 應該是 GROQ_API_KEY
         """
         try:
-            genai.configure(api_key=api_key)
-            self.api_key = api_key
-            # 優先使用 2.0-flash-exp (雖然有 quota 限制但比較新)
-            self.model_name = 'gemini-2.0-flash-exp'
-            self.model = self._init_model(self.model_name)
+            # 優先從環境變數讀取 GROQ_API_KEY，如果沒有則嘗試使用傳入的 key
+            # (傳入的可能是舊的 GEMINI_KEY，所以優先讀取正確的環境變數)
+            groq_key = os.getenv('GROQ_API_KEY') or api_key
+            
+            self.client = Groq(api_key=groq_key)
+            # 使用 Llama-3-70b 模型，性能極強且目前免費
+            self.model = "llama3-70b-8192"
+            logger.info(f"✅ Groq AI 已連接 (Model: {self.model})")
         except Exception as e:
-            logger.error(f"❌ Gemini 連接失敗: {e}")
-            self.model = None
-
-    def _init_model(self, model_name):
-        try:
-            model = genai.GenerativeModel(model_name)
-            logger.info(f"✅ Gemini 模型已連接: {model_name}")
-            return model
-        except Exception as e:
-            logger.warning(f"⚠️ 模型 {model_name} 初始化失敗: {e}")
-            return None
+            logger.error(f"❌ Groq 連接失敗: {e}")
+            self.client = None
     
     def validate_signal(
         self,
@@ -61,92 +57,61 @@ class GeminiSignalValidator:
         market_context: str = ""
     ) -> Optional[GeminiAnalysis]:
         
-        if not self.model:
-            # 嘗試重新連接
-            self.model = self._init_model('gemini-2.0-flash-exp')
-            if not self.model:
-                return self._create_default_analysis(signal_type, confidence)
+        if not self.client:
+            return self._create_default_analysis(signal_type, confidence)
         
         try:
-            # 增加基礎延遲，避免連續請求觸發 Rate Limit
-            time.sleep(5)
-            
-            prompt = f"""你是專業的加密貨幣交易分析師。請快速分析這個交易信號：
+            prompt = f"""你是專業的加密貨幣交易分析師。請分析以下交易信號並給出 JSON 格式的建議。
 
-【交易信息】
-- 符號: {symbol}
-- 當前價格: ${current_price:,.2f}
-- 信號: {signal_type}
-- 原始信心度: {confidence:.1f}%
+【交易數據】
+- 幣種: {symbol}
+- 價格: ${current_price:,.2f}
+- 信號: {signal_type} (原始信心: {confidence:.1f}%)
 
-【多時間框架分析】
-短期(1h): {short_term_analysis.get('trend', 'N/A')} ({short_term_analysis.get('confidence', 0):.0f}%)
-中期(4h): {medium_term_analysis.get('trend', 'N/A')} ({medium_term_analysis.get('confidence', 0):.0f}%)
-長期(1d): {long_term_analysis.get('trend', 'N/A')} ({long_term_analysis.get('confidence', 0):.0f}%)
+【趨勢分析】
+- 1H (短線): {short_term_analysis.get('trend')}
+- 4H (中線): {medium_term_analysis.get('trend')}
+- 1D (長線): {long_term_analysis.get('trend')}
 
 【技術指標】
 - RSI: {technical_indicators.get('rsi', 'N/A')}
 - MACD: {technical_indicators.get('macd', 'N/A')}
-- 成交量趨勢: {technical_indicators.get('volume_trend', 'N/A')}
+- Volume: {technical_indicators.get('volume_trend', 'N/A')}
 
-{f"【市場背景】{market_context}" if market_context else ""}
+請嚴格按照以下格式回答（不要有廢話，只回數字和簡短理由）：
 
-請用數字格式回答（簡潔）：
-1. 信號有效性？(是/否) + 評分(0-100)
-2. 建議進場價格偏移(%)：相對當前價
-3. 止損百分比(%)：向下風險
-4. 止盈百分比(%)：向上目標
-5. 市場狀態：牛市/熊市/盤整
-6. 信心度調整：-30 到 +30 之間
-7. 理由(一句話)"""
-            
-            return self._generate_with_retry(prompt, symbol, signal_type, confidence, current_price)
+1. 有效性評分 (0-100)
+2. 建議進場位偏移% (例如 -0.5 代表低於現價 0.5% 進場)
+3. 止損位偏移% (例如 2.0 代表風險 2%)
+4. 止盈位偏移% (例如 5.0 代表目標 5%)
+5. 市場狀態 (牛市/熊市/盤整)
+6. 信心調整值 (-30 到 +30)
+7. 理由 (一句話)"""
+
+            chat_completion = self.client.chat.completions.create(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "你是一個嚴謹的量化交易員。只輸出關鍵數據，不輸出閒聊。"
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt,
+                    }
+                ],
+                model=self.model,
+                temperature=0.5,
+                max_tokens=300,
+            )
+
+            response_text = chat_completion.choices[0].message.content
+            return self._parse_response(response_text, signal_type, confidence, current_price)
         
         except Exception as e:
-            logger.error(f"❌ Gemini 分析失敗 ({symbol}): {e}")
-            return self._create_default_analysis(signal_type, confidence)
-
-    def _generate_with_retry(self, prompt, symbol, signal_type, confidence, current_price, retry_count=0):
-        try:
-            response = self.model.generate_content(
-                prompt,
-                generation_config={
-                    'temperature': 0.7,
-                    'top_p': 0.95,
-                    'top_k': 40,
-                    'max_output_tokens': 500,
-                }
-            )
-            return self._parse_gemini_response(response.text, signal_type, confidence, current_price)
-            
-        except Exception as e:
-            error_msg = str(e)
-            
-            # 處理 429 (配額滿) -> 智能等待
-            if ("429" in error_msg or "Quota" in error_msg) and retry_count < 2:
-                # 根據錯誤訊息中的 retry_delay 提取等待時間，或者默認 25 秒
-                wait_time = 25 
-                match = re.search(r'retry in (\d+)', error_msg)
-                if match:
-                    wait_time = int(match.group(1)) + 2 # 多加2秒緩衝
-                
-                logger.warning(f"⚠️ 配額滿 ({symbol})，等待 {wait_time} 秒後重試...")
-                time.sleep(wait_time)
-                return self._generate_with_retry(prompt, symbol, signal_type, confidence, current_price, retry_count + 1)
-            
-            # 處理 404 -> 切換模型 (如果不支援 2.0 就切回 1.5)
-            if "404" in error_msg and retry_count < 1:
-                 if '2.0' in self.model_name:
-                    logger.warning(f"⚠️ 模型 2.0 未找到，降級至 1.5-flash...")
-                    self.model_name = 'gemini-1.5-flash'
-                    self.model = self._init_model(self.model_name)
-                    if self.model:
-                        return self._generate_with_retry(prompt, symbol, signal_type, confidence, current_price, retry_count + 1)
-
-            logger.error(f"❌ Gemini 請求最終失敗: {error_msg}")
+            logger.error(f"❌ Groq 分析失敗 ({symbol}): {e}")
             return self._create_default_analysis(signal_type, confidence)
     
-    def _parse_gemini_response(
+    def _parse_response(
         self,
         response_text: str,
         signal_type: str,
@@ -154,38 +119,17 @@ class GeminiSignalValidator:
         current_price: float
     ) -> GeminiAnalysis:
         try:
-            is_valid = "是" in response_text or "valid" in response_text.lower()
+            # 使用正則表達式提取數值，增加對 Groq 回應格式的容錯率
+            validity_score = self._extract_number(response_text, ["評分", "score", "validity"], default=confidence)
+            entry_adjustment = self._extract_number(response_text, ["進場", "entry"], default=0.0)
+            stop_loss_pct = self._extract_number(response_text, ["止損", "stop", "sl"], default=2.0)
+            take_profit_pct = self._extract_number(response_text, ["止盈", "profit", "tp"], default=5.0)
+            confidence_adjustment = self._extract_number(response_text, ["調整", "adjust"], default=0.0)
             
-            validity_score = self._extract_number(
-                response_text,
-                ["評分", "評分:", "score", "有效性"],
-                default=confidence
-            )
+            # 判斷是否有效
+            is_valid = validity_score >= 60
             
-            entry_adjustment = self._extract_number(
-                response_text,
-                ["進場", "entry", "偏移"],
-                default=0.0
-            )
-            
-            stop_loss_pct = self._extract_number(
-                response_text,
-                ["止損", "stop", "risk"],
-                default=2.0
-            )
-            
-            take_profit_pct = self._extract_number(
-                response_text,
-                ["止盈", "profit", "target", "目標"],
-                default=5.0
-            )
-            
-            confidence_adjustment = self._extract_number(
-                response_text,
-                ["調整", "adjust"],
-                default=0.0
-            )
-            
+            # 計算實際價格
             entry_price = current_price * (1 + entry_adjustment / 100)
             
             if signal_type in ["BUY", "STRONG_BUY"]:
@@ -195,15 +139,21 @@ class GeminiSignalValidator:
                 stop_loss = current_price * (1 + stop_loss_pct / 100)
                 take_profit = current_price * (1 - take_profit_pct / 100)
             
-            potential_loss = abs(current_price - stop_loss)
-            potential_gain = abs(take_profit - current_price)
+            # 計算盈虧比
+            potential_loss = abs(entry_price - stop_loss)
+            potential_gain = abs(take_profit - entry_price)
             risk_reward = potential_gain / potential_loss if potential_loss > 0 else 0
             
+            # 提取市場狀態
             market_condition = "盤整"
             if "牛市" in response_text or "bullish" in response_text.lower():
                 market_condition = "牛市"
             elif "熊市" in response_text or "bearish" in response_text.lower():
                 market_condition = "熊市"
+            
+            # 提取理由（移除數字行，只留文字）
+            lines = response_text.split('\n')
+            reasoning = next((line for line in reversed(lines) if len(line) > 10 and not any(c.isdigit() for c in line)), "AI 綜合技術指標分析")
             
             return GeminiAnalysis(
                 is_valid=is_valid,
@@ -212,26 +162,25 @@ class GeminiSignalValidator:
                 stop_loss=stop_loss,
                 take_profit=take_profit,
                 risk_reward_ratio=risk_reward,
-                reasoning=response_text[:400],
+                reasoning=reasoning[:200],
                 market_condition=market_condition,
                 confidence_adjustment=max(-30, min(30, confidence_adjustment))
             )
         
         except Exception as e:
-            logger.error(f"❌ 解析 Gemini 回應失敗: {e}")
+            logger.error(f"❌ 解析 Groq 回應失敗: {e}")
             return self._create_default_analysis(signal_type, confidence)
     
     @staticmethod
     def _extract_number(text: str, keywords: list, default: float = 0) -> float:
-        try:
+        for line in text.split('\n'):
             for keyword in keywords:
-                pattern = rf'{keyword}[:\s(]*?(-?\d+(?:\.\d+)?)'
-                match = re.search(pattern, text, re.IGNORECASE)
-                if match:
-                    return float(match.group(1))
-            return default
-        except Exception:
-            return default
+                if keyword in line.lower():
+                    # 尋找行內的數字
+                    matches = re.findall(r'-?\d+(?:\.\d+)?', line)
+                    if matches:
+                        return float(matches[-1]) # 取最後一個數字通常是值
+        return default
     
     @staticmethod
     def _create_default_analysis(signal_type: str, confidence: float) -> GeminiAnalysis:
@@ -242,7 +191,7 @@ class GeminiSignalValidator:
             stop_loss=None,
             take_profit=None,
             risk_reward_ratio=None,
-            reasoning="Gemini AI 配額已滿或不可用，使用原始分析",
+            reasoning="AI 分析服務暫時不可用",
             market_condition="未知",
             confidence_adjustment=0
         )
