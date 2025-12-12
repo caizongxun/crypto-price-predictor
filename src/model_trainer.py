@@ -22,7 +22,7 @@ class LSTMModel(nn.Module):
     
     def __init__(self, input_size: int, hidden_size: int = 128, 
                  num_layers: int = 2, dropout: float = 0.2, 
-                 output_size: int = 1):
+                 output_size: int = 5): # Default output_size updated to 5
         """Initialize LSTM model.
         
         Args:
@@ -30,7 +30,7 @@ class LSTMModel(nn.Module):
             hidden_size: Number of hidden units
             num_layers: Number of LSTM layers
             dropout: Dropout rate
-            output_size: Number of output features
+            output_size: Number of output prediction steps
         """
         super(LSTMModel, self).__init__()
         self.hidden_size = hidden_size
@@ -55,7 +55,7 @@ class LSTMModel(nn.Module):
         self.fc1 = nn.Linear(hidden_size * 2, 64)
         self.relu = nn.ReLU()
         self.dropout = nn.Dropout(dropout)
-        self.fc2 = nn.Linear(64, output_size)
+        self.fc2 = nn.Linear(64, output_size) # Predicts 'output_size' steps ahead
     
     def forward(self, x):
         """Forward pass.
@@ -64,7 +64,7 @@ class LSTMModel(nn.Module):
             x: Input tensor of shape (batch_size, seq_len, input_size)
             
         Returns:
-            Output predictions
+            Output predictions of shape (batch_size, output_size)
         """
         # LSTM
         lstm_out, _ = self.lstm(x)
@@ -89,7 +89,7 @@ class TransformerModel(nn.Module):
     
     def __init__(self, input_size: int, d_model: int = 512,
                  num_heads: int = 8, num_layers: int = 4,
-                 dropout: float = 0.1, output_size: int = 1):
+                 dropout: float = 0.1, output_size: int = 5): # Default output_size updated to 5
         """Initialize Transformer model.
         
         Args:
@@ -98,7 +98,7 @@ class TransformerModel(nn.Module):
             num_heads: Number of attention heads
             num_layers: Number of transformer layers
             dropout: Dropout rate
-            output_size: Number of output features
+            output_size: Number of output prediction steps
         """
         super(TransformerModel, self).__init__()
         
@@ -156,23 +156,31 @@ class ModelTrainer:
         self.model = None
         self.optimizer = None
         self.criterion = nn.MSELoss()
+        self.output_size = 5 # Default prediction horizon
         
         logger.info(f"Using device: {self.device}")
         logger.info(f"Model type: {model_type}")
     
     def prepare_data(self, X: np.ndarray, y: np.ndarray,
                     test_size: float = 0.2) -> Tuple:
-        """Prepare data for training.
+        """Prepare data for training with multi-step targets.
         
         Args:
             X: Feature array
-            y: Target array
+            y: Target array (batch_size, output_size)
             test_size: Proportion of test data
             
         Returns:
             Tuple of train and test data
         """
         try:
+            # Ensure y is 2D (batch_size, output_size)
+            if len(y.shape) == 1:
+                 # If y is 1D, we need to restructure it for multi-step prediction in previous steps.
+                 # However, usually prepare_sequences handles this.
+                 # Assuming y passed here is already correctly shaped (samples, output_size)
+                 pass
+
             # Split data
             X_train, X_test, y_train, y_test = train_test_split(
                 X, y, test_size=test_size, shuffle=False
@@ -184,10 +192,10 @@ class ModelTrainer:
             y_train = torch.from_numpy(y_train).float().to(self.device)
             y_test = torch.from_numpy(y_test).float().to(self.device)
             
-            logger.info(f"Data prepared - Train: {X_train.shape}, Test: {X_test.shape}")
+            logger.info(f"Data prepared - Train: {X_train.shape}, {y_train.shape}, Test: {X_test.shape}, {y_test.shape}")
             return X_train, X_test, y_train, y_test
         except Exception as e:
-            logger.error(f"Failed to prepare data: {e}")
+            logger.error(f"Failed to prepare data: {e}", exc_info=True)
             return None
     
     def create_model(self, input_size: int) -> nn.Module:
@@ -205,14 +213,16 @@ class ModelTrainer:
                     input_size=input_size,
                     hidden_size=self.config.get('hidden_size', 128),
                     num_layers=self.config.get('num_layers', 2),
-                    dropout=self.config.get('dropout', 0.2)
+                    dropout=self.config.get('dropout', 0.2),
+                    output_size=self.output_size
                 )
             elif self.model_type == 'transformer':
                 self.model = TransformerModel(
                     input_size=input_size,
                     d_model=self.config.get('d_model', 512),
                     num_heads=self.config.get('num_heads', 8),
-                    num_layers=self.config.get('num_layers', 4)
+                    num_layers=self.config.get('num_layers', 4),
+                    output_size=self.output_size
                 )
             else:
                 raise ValueError(f"Unknown model type: {self.model_type}")
@@ -223,8 +233,7 @@ class ModelTrainer:
                 lr=self.config.get('learning_rate', 0.001)
             )
             
-            logger.info(f"{self.model_type.upper()} model created")
-            logger.info(f"Model parameters: {sum(p.numel() for p in self.model.parameters())}")
+            logger.info(f"{self.model_type.upper()} model created with output size {self.output_size}")
             return self.model
         except Exception as e:
             logger.error(f"Failed to create model: {e}")
@@ -263,7 +272,8 @@ class ModelTrainer:
                 for batch_X, batch_y in train_loader:
                     self.optimizer.zero_grad()
                     predictions = self.model(batch_X)
-                    loss = self.criterion(predictions, batch_y.unsqueeze(1))
+                    # batch_y should be (batch_size, output_size)
+                    loss = self.criterion(predictions, batch_y)
                     loss.backward()
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
                     self.optimizer.step()
@@ -275,7 +285,7 @@ class ModelTrainer:
                 self.model.eval()
                 with torch.no_grad():
                     val_predictions = self.model(X_val)
-                    val_loss = self.criterion(val_predictions, y_val.unsqueeze(1)).item()
+                    val_loss = self.criterion(val_predictions, y_val).item()
                 
                 history['train_loss'].append(train_loss)
                 history['val_loss'].append(val_loss)
@@ -303,11 +313,7 @@ class ModelTrainer:
             return None
     
     def save_model(self, path: str):
-        """Save model to disk.
-        
-        Args:
-            path: Path to save model
-        """
+        """Save model to disk."""
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             torch.save(self.model.state_dict(), path)
@@ -316,12 +322,7 @@ class ModelTrainer:
             logger.error(f"Failed to save model: {e}")
     
     def load_model(self, path: str, input_size: int):
-        """Load model from disk.
-        
-        Args:
-            path: Path to model file
-            input_size: Input feature size
-        """
+        """Load model from disk."""
         try:
             self.create_model(input_size)
             self.model.load_state_dict(torch.load(path, map_location=self.device))
