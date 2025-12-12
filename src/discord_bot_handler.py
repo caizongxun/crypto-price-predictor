@@ -132,24 +132,39 @@ class TrainingNotificationCog(commands.Cog):
                 buy_count = sum(1 for s in GLOBAL_SIGNALS.values() if 'BUY' in s.get('signal_type', ''))
                 sell_count = sum(1 for s in GLOBAL_SIGNALS.values() if 'SELL' in s.get('signal_type', ''))
                 neutral_count = sum(1 for s in GLOBAL_SIGNALS.values() if 'NEUTRAL' in s.get('signal_type', ''))
-                avg_confidence = sum(s.get('confidence', 0) for s in GLOBAL_SIGNALS.values()) / total_coins if total_coins > 0 else 0
+                
+                # FIX: 優先使用 AI Validity 作為信心度指標，如果沒有則使用原始 confidence
+                def get_display_confidence(sig):
+                    ai_score = sig.get('ai_validity')
+                    if ai_score is not None:
+                        return float(ai_score) / 100.0
+                    return sig.get('confidence', 0)
+
+                avg_confidence = sum(get_display_confidence(s) for s in GLOBAL_SIGNALS.values()) / total_coins if total_coins > 0 else 0
                 
                 embed.add_field(name="👮 Market Status", 
-                               value=f"Monitoring {total_coins} coins\nAvg Confidence: {avg_confidence:.1%}",
+                               value=f"Monitoring {total_coins} coins\nAvg AI Score: {avg_confidence:.1%}",
                                inline=True)
                 embed.add_field(name="🟢 Buy Signals", value=f"{buy_count}", inline=True)
                 embed.add_field(name="🔴 Sell Signals", value=f"{sell_count}", inline=True)
                 
                 # Create detailed signal table
-                signals_table = "```\nSymbol  | Signal        | Confidence | Trend\n"
-                signals_table += "--------|---------------|------------|-------------------\n"
+                signals_table = "```\nSymbol  | Signal        | AI Score | Trend\n"
+                signals_table += "--------|---------------|----------|-------------------\n"
                 
                 for symbol in sorted(GLOBAL_SIGNALS.keys()):
                     sig = GLOBAL_SIGNALS[symbol]
                     signal = sig.get('signal_type', 'N/A')[:12].ljust(12)
-                    conf = f"{sig.get('confidence', 0):.0%}".ljust(9)
+                    
+                    # 顯示 AI 分數
+                    ai_score = sig.get('ai_validity')
+                    if ai_score is not None:
+                        conf_str = f"{float(ai_score):.0f}".ljust(8)  # 顯示整數分數 (e.g., 60)
+                    else:
+                        conf_str = f"{sig.get('confidence', 0):.0%}".ljust(8) # 顯示原始信心 (e.g., 50%)
+                        
                     trend = sig.get('trend_direction', 'N/A')[:15].ljust(15)
-                    signals_table += f"{symbol:6} | {signal} | {conf} | {trend}\n"
+                    signals_table += f"{symbol:6} | {signal} | {conf_str} | {trend}\n"
                     if len(signals_table) > 1900:  # Leave room for closing
                         signals_table = signals_table[:1900] + "...\n```"
                         break
@@ -398,155 +413,3 @@ class TrainingNotificationCog(commands.Cog):
         except Exception as e:
             logger.error(f"Failed to send batch training notification: {e}")
             return False
-    
-    async def send_status_update(
-        self,
-        title: str,
-        description: str,
-        fields: dict,
-        color: discord.Color = discord.Color.blue()
-    ) -> bool:
-        """Send custom status update"""
-        try:
-            channel = self.bot.get_channel(self.channel_id)
-            if not channel:
-                logger.error(f"Channel {self.channel_id} not found")
-                return False
-            
-            embed = discord.Embed(
-                title=title,
-                description=description,
-                color=color,
-                timestamp=datetime.now()
-            )
-            
-            for field_name, field_value in fields.items():
-                embed.add_field(name=field_name, value=str(field_value), inline=True)
-            
-            embed.set_footer(text=f"Crypto Price Predictor | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-            
-            await channel.send(embed=embed)
-            logger.info(f"✅ Status update sent: {title}")
-            return True
-        
-        except Exception as e:
-            logger.error(f"Failed to send status update: {e}")
-            return False
-
-
-class DiscordBotHandler:
-    """Main Discord Bot Handler with proper async/threading support"""
-    
-    def __init__(self):
-        self.token = os.getenv('DISCORD_BOT_TOKEN')
-        self.channel_id = os.getenv('DISCORD_CHANNEL_ID')
-        
-        if not self.token:
-            logger.error("❌ DISCORD_BOT_TOKEN not configured")
-            self.bot = None
-            self.training_cog = None
-            return
-        
-        # Create bot with intents
-        intents = discord.Intents.default()
-        intents.message_content = True
-        intents.members = True
-        
-        self.bot = commands.Bot(command_prefix='!', intents=intents)
-        self.training_cog = None
-        self.loop = None
-        self.thread = None
-    
-    def _run_bot(self):
-        """Run bot in separate thread with its own event loop"""
-        try:
-            # Create new event loop for this thread
-            self.loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(self.loop)
-            
-            # Add cog to bot
-            async def setup():
-                cog = TrainingNotificationCog(self.bot)
-                await self.bot.add_cog(cog)
-                self.training_cog = cog
-                logger.info("✅ TrainingNotificationCog loaded")
-            
-            # Run setup
-            self.loop.run_until_complete(setup())
-            
-            # Start bot
-            self.loop.run_until_complete(self.bot.start(self.token))
-        
-        except Exception as e:
-            logger.error(f"❌ Discord bot error: {e}", exc_info=True)
-        finally:
-            try:
-                self.loop.run_until_complete(self.loop.shutdown_asyncgens())
-            except:
-                pass
-    
-    def start(self):
-        """Start the bot in background thread"""
-        if not self.token:
-            logger.error("❌ DISCORD_BOT_TOKEN not set")
-            return
-        
-        try:
-            # Start bot in daemon thread
-            self.thread = threading.Thread(target=self._run_bot, daemon=True)
-            self.thread.start()
-            logger.info("✅ Discord bot thread started")
-        except Exception as e:
-            logger.error(f"❌ Failed to start Discord bot thread: {e}")
-    
-    def queue_embed(self, embed: discord.Embed):
-        """Queue an embed to be sent (thread-safe)"""
-        if self.training_cog:
-            try:
-                self.training_cog.embed_queue.put(embed)
-                logger.debug(f"✅ Embed queued (queue size: {self.training_cog.embed_queue.qsize()})")
-            except Exception as e:
-                logger.error(f"❌ Error queueing embed: {e}")
-        else:
-            logger.warning("⚠️ TrainingNotificationCog not available yet, embed discarded")
-    
-    def update_signal(self, symbol: str, signal_data: dict):
-        """Update signal data in global storage (thread-safe)"""
-        try:
-            GLOBAL_SIGNALS[symbol] = signal_data
-            logger.debug(f"✅ Updated signal for {symbol}")
-        except Exception as e:
-            logger.error(f"Error updating signal: {e}")
-    
-    async def send_training_notification(
-        self,
-        symbol: str,
-        epochs: int,
-        train_loss: float,
-        val_loss: float,
-        training_time: float,
-        success: bool = True,
-        error_msg: Optional[str] = None
-    ) -> bool:
-        """Send training notification via bot"""
-        if self.training_cog:
-            return await self.training_cog.send_training_notification(
-                symbol, epochs, train_loss, val_loss, training_time, success, error_msg
-            )
-        return False
-    
-    async def send_batch_training_notification(
-        self,
-        symbols: List[str],
-        successful_count: int,
-        failed_count: int,
-        total_time: float,
-        avg_val_loss: float,
-        detailed_results: Optional[List[dict]] = None
-    ) -> bool:
-        """Send batch training notification via bot"""
-        if self.training_cog:
-            return await self.training_cog.send_batch_training_notification(
-                symbols, successful_count, failed_count, total_time, avg_val_loss, detailed_results
-            )
-        return False
