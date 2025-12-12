@@ -2,7 +2,7 @@ import discord
 from discord.ext import commands, tasks
 import logging
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Dict
 import os
 from dotenv import load_dotenv
 import asyncio
@@ -12,6 +12,9 @@ import sys
 
 load_dotenv()
 logger = logging.getLogger(__name__)
+
+# Global signal storage
+GLOBAL_SIGNALS: Dict = {}
 
 
 class TrainingNotificationCog(commands.Cog):
@@ -65,19 +68,147 @@ class TrainingNotificationCog(commands.Cog):
         logger.info(f'✅ Discord Bot is online: {self.bot.user}')
         print(f'✅ Discord Bot is online: {self.bot.user}')
     
-    @commands.command(name='recommendation', help='Get latest trading recommendation')
+    @commands.command(name='recommendation', help='Get latest trading recommendations')
     async def recommendation_command(self, ctx):
         """Get latest trading recommendations"""
         try:
             embed = discord.Embed(
                 title="📊 Latest Trading Signals",
-                description="Loading latest signals...",
+                description="All available trading signals",
                 color=discord.Color.blue()
             )
+            
+            if not GLOBAL_SIGNALS:
+                embed.add_field(name="Status", value="No signals available yet", inline=False)
+            else:
+                # BUY signals
+                buy_signals = [s for s in GLOBAL_SIGNALS.values() if 'BUY' in s.get('signal_type', '')]
+                if buy_signals:
+                    buy_text = ""
+                    for sig in buy_signals[:5]:  # Show top 5
+                        symbol = sig.get('symbol', 'N/A')
+                        confidence = sig.get('confidence', 0)
+                        buy_text += f"**{symbol}**: {confidence:.0%}\n"
+                    embed.add_field(name="🟢 BUY Signals", value=buy_text[:1024], inline=True)
+                
+                # SELL signals
+                sell_signals = [s for s in GLOBAL_SIGNALS.values() if 'SELL' in s.get('signal_type', '')]
+                if sell_signals:
+                    sell_text = ""
+                    for sig in sell_signals[:5]:  # Show top 5
+                        symbol = sig.get('symbol', 'N/A')
+                        confidence = sig.get('confidence', 0)
+                        sell_text += f"**{symbol}**: {confidence:.0%}\n"
+                    embed.add_field(name="🔴 SELL Signals", value=sell_text[:1024], inline=True)
+                
+                # NEUTRAL signals
+                neutral_signals = [s for s in GLOBAL_SIGNALS.values() if 'NEUTRAL' in s.get('signal_type', '')]
+                if neutral_signals:
+                    neutral_text = f"{len(neutral_signals)} cryptocurrencies"
+                    embed.add_field(name="⚪ NEUTRAL", value=neutral_text, inline=True)
+            
+            embed.set_footer(text=f"Last updated: {datetime.now().strftime('%H:%M:%S')}")
             await ctx.send(embed=embed)
             logger.info(f"✅ Recommendation command executed by {ctx.author}")
         except Exception as e:
             logger.error(f"Error in recommendation command: {e}")
+            await ctx.send(f"❌ Error: {e}")
+    
+    @commands.command(name='portfolio', help='View full portfolio status')
+    async def portfolio_command(self, ctx):
+        """View full portfolio status for all cryptocurrencies"""
+        try:
+            embed = discord.Embed(
+                title="💰 Portfolio Overview",
+                description="Status of all monitored cryptocurrencies",
+                color=discord.Color.purple()
+            )
+            
+            if not GLOBAL_SIGNALS:
+                embed.add_field(name="Status", value="No data available yet", inline=False)
+            else:
+                # Summary statistics
+                total_coins = len(GLOBAL_SIGNALS)
+                buy_count = sum(1 for s in GLOBAL_SIGNALS.values() if 'BUY' in s.get('signal_type', ''))
+                sell_count = sum(1 for s in GLOBAL_SIGNALS.values() if 'SELL' in s.get('signal_type', ''))
+                neutral_count = sum(1 for s in GLOBAL_SIGNALS.values() if 'NEUTRAL' in s.get('signal_type', ''))
+                avg_confidence = sum(s.get('confidence', 0) for s in GLOBAL_SIGNALS.values()) / total_coins if total_coins > 0 else 0
+                
+                embed.add_field(name="👮 Market Status", 
+                               value=f"Monitoring {total_coins} coins\nAvg Confidence: {avg_confidence:.1%}",
+                               inline=True)
+                embed.add_field(name="🟢 Buy Signals", value=f"{buy_count}", inline=True)
+                embed.add_field(name="🔴 Sell Signals", value=f"{sell_count}", inline=True)
+                
+                # Create detailed signal table
+                signals_table = "```\nSymbol  | Signal        | Confidence | Trend\n"
+                signals_table += "--------|---------------|------------|-------------------\n"
+                
+                for symbol in sorted(GLOBAL_SIGNALS.keys()):
+                    sig = GLOBAL_SIGNALS[symbol]
+                    signal = sig.get('signal_type', 'N/A')[:12].ljust(12)
+                    conf = f"{sig.get('confidence', 0):.0%}".ljust(9)
+                    trend = sig.get('trend_direction', 'N/A')[:15].ljust(15)
+                    signals_table += f"{symbol:6} | {signal} | {conf} | {trend}\n"
+                    if len(signals_table) > 1900:  # Leave room for closing
+                        signals_table = signals_table[:1900] + "...\n```"
+                        break
+                else:
+                    signals_table += "```"
+                
+                embed.add_field(name="📊 Signal Details", value=signals_table, inline=False)
+            
+            embed.set_footer(text=f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            await ctx.send(embed=embed)
+            logger.info(f"✅ Portfolio command executed by {ctx.author}")
+        except Exception as e:
+            logger.error(f"Error in portfolio command: {e}")
+            await ctx.send(f"❌ Error: {str(e)[:100]}")
+    
+    @commands.command(name='symbol', help='Get signal for specific symbol')
+    async def symbol_command(self, ctx, symbol: str):
+        """Get detailed signal for a specific symbol"""
+        try:
+            symbol = symbol.upper()
+            sig = GLOBAL_SIGNALS.get(symbol)
+            
+            if not sig:
+                await ctx.send(f"❌ Symbol {symbol} not found")
+                return
+            
+            # Determine color based on signal
+            if 'BUY' in sig.get('signal_type', ''):
+                color = discord.Color.green()
+            elif 'SELL' in sig.get('signal_type', ''):
+                color = discord.Color.red()
+            else:
+                color = discord.Color.yellow()
+            
+            embed = discord.Embed(
+                title=f"{sig.get('signal_type', 'N/A')} {symbol}USDT",
+                color=color,
+                timestamp=datetime.now()
+            )
+            
+            embed.add_field(name="💲 Current Price", value=f"${sig.get('current_price', 0):.2f}", inline=True)
+            embed.add_field(name="🎯 Predicted Price", value=f"${sig.get('predicted_price', 0):.2f}", inline=True)
+            embed.add_field(name="📈 Price Change", 
+                           value=f"{((sig.get('predicted_price', 0) - sig.get('current_price', 0)) / (sig.get('current_price', 0) + 1e-8) * 100):+.2f}%",
+                           inline=True)
+            
+            embed.add_field(name="💯 Confidence", value=f"{sig.get('confidence', 0):.1%}", inline=True)
+            embed.add_field(name="📉 Trend", value=sig.get('trend_direction', 'N/A'), inline=True)
+            embed.add_field(name="📊 RSI", value=f"{sig.get('rsi', 50):.1f}", inline=True)
+            
+            embed.add_field(name="🎶 Entry", value=f"${sig.get('entry_price', 0):.2f}", inline=True)
+            embed.add_field(name="✅ TP", value=f"${sig.get('take_profit', 0):.2f}", inline=True)
+            embed.add_field(name="❌ SL", value=f"${sig.get('stop_loss', 0):.2f}", inline=True)
+            
+            embed.set_footer(text=f"Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            await ctx.send(embed=embed)
+            logger.info(f"✅ Symbol command for {symbol} executed by {ctx.author}")
+        except Exception as e:
+            logger.error(f"Error in symbol command: {e}")
             await ctx.send(f"❌ Error: {e}")
     
     @commands.command(name='status', help='Get bot status')
@@ -90,6 +221,7 @@ class TrainingNotificationCog(commands.Cog):
             )
             embed.add_field(name="Status", value="✅ Online", inline=True)
             embed.add_field(name="Latency", value=f"{self.bot.latency*1000:.0f}ms", inline=True)
+            embed.add_field(name="Monitored Coins", value=f"{len(GLOBAL_SIGNALS)}", inline=True)
             await ctx.send(embed=embed)
             logger.info(f"✅ Status command executed by {ctx.author}")
         except Exception as e:
@@ -353,6 +485,14 @@ class DiscordBotHandler:
                 logger.error(f"❌ Error queueing embed: {e}")
         else:
             logger.warning("⚠️ TrainingNotificationCog not available yet, embed discarded")
+    
+    def update_signal(self, symbol: str, signal_data: dict):
+        """Update signal data in global storage (thread-safe)"""
+        try:
+            GLOBAL_SIGNALS[symbol] = signal_data
+            logger.debug(f"✅ Updated signal for {symbol}")
+        except Exception as e:
+            logger.error(f"Error updating signal: {e}")
     
     async def send_training_notification(
         self,
