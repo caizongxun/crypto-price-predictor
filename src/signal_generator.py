@@ -44,23 +44,27 @@ class TradingSignal:
     technical_indicators: Dict
 
 class SignalGenerator:
-    def __init__(self, model=None, device='cuda'):
+    def __init__(self, model=None, device='cpu'):
         self.model = model
         self.device = torch.device(device)
         self.lookback_period = 60
         self.min_confidence_threshold = 0.6
     
-    def prepare_features(self, prices: np.ndarray) -> np.ndarray:
+    def prepare_features(self, prices: np.ndarray) -> Optional[np.ndarray]:
         """用 17 個特徵準備資料供模型輸入"""
         try:
             prices = np.array(prices, dtype=float).flatten()
+            
+            if len(prices) < 60:
+                logger.warning(f"Not enough price data: {len(prices)} < 60")
+                return None
             
             # 創建 DataFrame 供計算技術指標
             df = pd.DataFrame({'close': prices})
             df['open'] = prices
             df['high'] = prices
             df['low'] = prices
-            df['volume'] = np.ones_like(prices)  # 統一成交量
+            df['volume'] = np.ones_like(prices)
             
             # SMA
             df['SMA_10'] = df['close'].rolling(window=10).mean()
@@ -73,6 +77,7 @@ class SignalGenerator:
             loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
             rs = gain / loss
             df['RSI'] = 100 - (100 / (1 + rs))
+            df['RSI'].fillna(50, inplace=True)  # 修復 NaN
             
             # MACD
             ema12 = df['close'].ewm(span=12).mean()
@@ -88,12 +93,13 @@ class SignalGenerator:
             df['BB_lower'] = bb_mid - (bb_std * 2)
             
             # ATR
-            tr = np.abs(np.diff(prices))
-            df['ATR'] = pd.Series(np.concatenate([[0], tr])).rolling(window=14).mean()
+            high_low = np.abs(np.diff(prices))
+            df['ATR'] = pd.Series(np.concatenate([[0], high_low])).rolling(window=14).mean()
+            df['ATR'].fillna(0, inplace=True)
             
             # Volume indicators
             df['Volume_SMA'] = df['volume'].rolling(window=20).mean()
-            df['Volume_ratio'] = df['volume'] / df['Volume_SMA']
+            df['Volume_ratio'] = df['volume'] / (df['Volume_SMA'] + 1e-8)
             
             # Price change
             df['Daily_return'] = df['close'].pct_change()
@@ -108,9 +114,17 @@ class SignalGenerator:
                 'Volume_ratio', 'Daily_return', 'Price_momentum'
             ]
             
-            features = df[feature_cols].fillna(0).values
+            # Forward fill 然後 backward fill 以處理 NaN
+            features = df[feature_cols].fillna(method='ffill').fillna(method='bfill').fillna(0).values
             
-            # 正見化
+            # 檢查是否有無效值
+            if np.isnan(features).any() or np.isinf(features).any():
+                logger.warning(f"Invalid values in features, cleaning...")
+                features = np.nan_to_num(features, nan=0.0, posinf=1.0, neginf=0.0)
+            
+            logger.debug(f"✅ Features shape: {features.shape}, Last row non-zero: {np.any(features[-1] != 0)}")
+            
+            # 正規化
             from sklearn.preprocessing import MinMaxScaler
             scaler = MinMaxScaler(feature_range=(0, 1))
             features_normalized = scaler.fit_transform(features)
@@ -118,19 +132,27 @@ class SignalGenerator:
             return features_normalized
         
         except Exception as e:
-            logger.error(f"Error preparing features: {e}")
+            logger.error(f"❌ Error preparing features: {e}", exc_info=True)
             return None
     
     def predict_next_price_and_volatility(self, prices: np.ndarray, symbol: str) -> Tuple[float, float]:
         try:
+            prices = np.array(prices, dtype=float).flatten()
+            logger.info(f"🤖 [Model Prediction] {symbol}: Input {len(prices)} prices")
+            
             # 準備 17 個特徵
             features = self.prepare_features(prices)
-            if features is None or len(features) < self.lookback_period:
-                raise ValueError(f"Insufficient features: got {len(features) if features is not None else 0}")
+            if features is None:
+                raise ValueError(f"Failed to prepare features for {symbol}")
+            
+            if len(features) < self.lookback_period:
+                raise ValueError(f"Not enough features: {len(features)} < {self.lookback_period}")
             
             # 取最後 60 個時間步
             X = features[-self.lookback_period:]
             X = X.reshape(1, X.shape[0], X.shape[1])  # (1, 60, 17)
+            
+            logger.debug(f"X shape for model: {X.shape}, Sample values: {X[0, 0, :3]}")
             
             X_tensor = torch.tensor(X, dtype=torch.float32).to(self.device)
             
@@ -145,18 +167,20 @@ class SignalGenerator:
                 self.model.train()
             
             # 計算波動率
-            price_returns = np.diff(prices) / prices[:-1]
+            price_returns = np.diff(prices) / (prices[:-1] + 1e-8)
             predicted_volatility = float(np.std(price_returns) * np.sqrt(252))
             
+            logger.info(f"✅ Model prediction for {symbol}: ${predicted_price:.2f} (vol: {predicted_volatility:.4f})")
             return float(predicted_price), float(predicted_volatility)
         
         except Exception as e:
-            logger.warning(f"Model prediction failed for {symbol}: {e}")
+            logger.warning(f"⚠️ Model prediction failed for {symbol}: {str(e)[:100]}")
             try:
                 prices = np.array(prices, dtype=float).flatten()
                 current_price = float(prices[-1])
-                price_returns = np.diff(prices) / prices[:-1]
+                price_returns = np.diff(prices) / (prices[:-1] + 1e-8)
                 volatility = float(np.std(price_returns) * np.sqrt(252))
+                logger.info(f"↩️ Fallback for {symbol}: current_price=${current_price:.2f}")
             except:
                 current_price = 1.0
                 volatility = 0.02
@@ -170,8 +194,8 @@ class SignalGenerator:
                 delta = np.diff(prices)
                 gains = np.where(delta > 0, delta, 0)
                 losses = np.where(delta < 0, -delta, 0)
-                avg_gain = np.mean(gains)
-                avg_loss = np.mean(losses)
+                avg_gain = np.mean(gains) if len(gains) > 0 else 0
+                avg_loss = np.mean(losses) if len(losses) > 0 else 0
                 if avg_loss != 0:
                     rs = avg_gain / avg_loss
                     rsi = 100 - (100 / (1 + rs))
@@ -198,8 +222,8 @@ class SignalGenerator:
             prices = np.array(prices, dtype=float).flatten()
             if len(prices) < 20:
                 return 0.0
-            short_term = (prices[-1] - prices[-5]) / prices[-5]
-            long_term = (prices[-1] - prices[-20]) / prices[-20]
+            short_term = (prices[-1] - prices[-5]) / (prices[-5] + 1e-8)
+            long_term = (prices[-1] - prices[-20]) / (prices[-20] + 1e-8)
             roc = short_term * 0.6 + long_term * 0.4
             return float(np.clip(roc / 0.05, -1, 1))
         except:
@@ -213,7 +237,7 @@ class SignalGenerator:
             sma_short = float(np.mean(prices[-5:]))
             sma_medium = float(np.mean(prices[-20:]))
             sma_long = float(np.mean(prices[-60:]))
-            trend_strength = abs(current_price - sma_medium) / sma_medium
+            trend_strength = abs(current_price - sma_medium) / (sma_medium + 1e-8)
             trend_strength = float(min(trend_strength, 1.0))
             if sma_short > sma_medium > sma_long:
                 direction = TrendDirection.STRONG_UPTREND if trend_strength > 0.03 else TrendDirection.UPTREND
@@ -246,13 +270,14 @@ class SignalGenerator:
             if self.model is not None:
                 try:
                     predicted_price, predicted_volatility = self.predict_next_price_and_volatility(price_history[-self.lookback_period:], symbol)
-                except:
+                except Exception as e:
+                    logger.warning(f"Model prediction error for {symbol}: {e}")
                     predicted_price = float(current_price)
-                    price_returns = np.diff(price_history) / price_history[:-1]
+                    price_returns = np.diff(price_history) / (price_history[:-1] + 1e-8)
                     predicted_volatility = float(np.std(price_returns) * np.sqrt(252))
             else:
                 predicted_price = float(current_price)
-                price_returns = np.diff(price_history) / price_history[:-1]
+                price_returns = np.diff(price_history) / (price_history[:-1] + 1e-8)
                 predicted_volatility = float(np.std(price_returns) * np.sqrt(252))
             
             technical_indicators = self.calculate_technical_indicators(price_history)
@@ -272,19 +297,19 @@ class SignalGenerator:
                 risk = stop_loss - entry_price
                 reward = entry_price - take_profit
             
-            risk_reward_ratio = float(reward / risk if risk != 0 else 0)
+            risk_reward_ratio = float(reward / (risk + 1e-8) if risk != 0 else 0)
             sentiment_score = float(momentum_score * 0.3 + (trend_strength if trend_direction in [TrendDirection.STRONG_UPTREND, TrendDirection.UPTREND] else -trend_strength) * 0.4 + (1 if is_breakout else 0) * 0.3)
             
             return TradingSignal(symbol=symbol, timestamp=datetime.now(), signal_type=signal_type, current_price=float(current_price), entry_price=float(entry_price), take_profit=float(take_profit), stop_loss=float(stop_loss), confidence=float(confidence), trend_direction=trend_direction, trend_strength=float(trend_strength), predicted_next_price=float(predicted_price), predicted_volatility=float(predicted_volatility), momentum_score=float(momentum_score), sentiment_score=float(sentiment_score), risk_reward_ratio=float(risk_reward_ratio), is_breakout=bool(is_breakout), technical_indicators=technical_indicators)
         except Exception as e:
-            logger.error(f"Error generating signal for {symbol}: {e}")
+            logger.error(f"Error generating signal for {symbol}: {e}", exc_info=True)
             return None
     
     def _generate_signal_type(self, current_price: float, predicted_price: float, rsi: float, momentum_score: float, trend_strength: float, trend_direction: TrendDirection, is_breakout: bool, technical_indicators: Dict) -> Tuple[SignalType, float]:
         confidence = 0.5
         signals = []
         if current_price > 0:
-            price_change = (predicted_price - current_price) / current_price
+            price_change = (predicted_price - current_price) / (current_price + 1e-8)
             signals.append(1.0 if price_change > 0.02 else (-1.0 if price_change < -0.02 else 0.0))
             if abs(price_change) > 0.02:
                 confidence += 0.1
