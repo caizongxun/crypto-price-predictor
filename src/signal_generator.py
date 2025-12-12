@@ -77,7 +77,7 @@ class SignalGenerator:
             loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
             rs = gain / loss
             df['RSI'] = 100 - (100 / (1 + rs))
-            df['RSI'].fillna(50, inplace=True)  # 修復 NaN
+            df['RSI'].fillna(50, inplace=True)
             
             # MACD
             ema12 = df['close'].ewm(span=12).mean()
@@ -115,7 +115,7 @@ class SignalGenerator:
             ]
             
             # Forward fill 然後 backward fill 以處理 NaN
-            features = df[feature_cols].fillna(method='ffill').fillna(method='bfill').fillna(0).values
+            features = df[feature_cols].ffill().bfill().fillna(0).values
             
             # 檢查是否有無效值
             if np.isnan(features).any() or np.isinf(features).any():
@@ -124,7 +124,7 @@ class SignalGenerator:
             
             logger.debug(f"✅ Features shape: {features.shape}, Last row non-zero: {np.any(features[-1] != 0)}")
             
-            # 正規化
+            # 正見化
             from sklearn.preprocessing import MinMaxScaler
             scaler = MinMaxScaler(feature_range=(0, 1))
             features_normalized = scaler.fit_transform(features)
@@ -161,16 +161,25 @@ class SignalGenerator:
             
             with torch.no_grad():
                 price_prediction = self.model(X_tensor)
-                predicted_price = price_prediction.cpu().numpy()[0][0]
+                predicted_price_normalized = price_prediction.cpu().numpy()[0][0]
             
             if was_training:
                 self.model.train()
+            
+            # 反正見化：將正見化的價格轉換回真實價格
+            # 模型訓練時正見化了 close 價格，所以我們需要反正見化
+            price_min = np.min(prices)
+            price_max = np.max(prices)
+            predicted_price = price_min + predicted_price_normalized * (price_max - price_min)
+            
+            # 如果預測價格超出範圍，迣断到有效範圍
+            predicted_price = np.clip(predicted_price, price_min * 0.8, price_max * 1.2)
             
             # 計算波動率
             price_returns = np.diff(prices) / (prices[:-1] + 1e-8)
             predicted_volatility = float(np.std(price_returns) * np.sqrt(252))
             
-            logger.info(f"✅ Model prediction for {symbol}: ${predicted_price:.2f} (vol: {predicted_volatility:.4f})")
+            logger.info(f"✅ Model prediction for {symbol}: ${predicted_price:.2f} (normalized: {predicted_price_normalized:.4f}, vol: {predicted_volatility:.4f})")
             return float(predicted_price), float(predicted_volatility)
         
         except Exception as e:
