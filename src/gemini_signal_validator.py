@@ -104,10 +104,11 @@ class GeminiSignalValidator:
                 ],
                 model=self.model,
                 temperature=0.5,
-                max_tokens=300,
+                max_tokens=500, # 增加 max_tokens 以確保回答完整
             )
 
             response_text = chat_completion.choices[0].message.content
+            # logger.info(f"Groq Response for {symbol}: {response_text[:100]}...") # Debug log
             return self._parse_response(response_text, signal_type, confidence, current_price)
         
         except Exception as e:
