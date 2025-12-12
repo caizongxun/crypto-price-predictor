@@ -124,43 +124,78 @@ class SignalGenerator:
         indicators = {}
         
         try:
+            # 確保價格是 1D 數組
+            if len(prices.shape) > 1:
+                prices = prices.flatten()
+            
+            prices = np.array(prices, dtype=float)
+            
             # RSI (Relative Strength Index)
             if len(prices) >= 14:
-                delta = np.diff(prices)
-                gain = np.where(delta > 0, delta, 0).mean()
-                loss = np.where(delta < 0, -delta, 0).mean()
-                rs = gain / loss if loss != 0 else 0
-                indicators['rsi'] = 100 - (100 / (1 + rs))
+                try:
+                    delta = np.diff(prices)
+                    gains = np.where(delta > 0, delta, 0)
+                    losses = np.where(delta < 0, -delta, 0)
+                    
+                    avg_gain = np.mean(gains)
+                    avg_loss = np.mean(losses)
+                    
+                    if avg_loss != 0:
+                        rs = avg_gain / avg_loss
+                        rsi = 100 - (100 / (1 + rs))
+                    else:
+                        rsi = 100 if avg_gain > 0 else 50
+                    
+                    indicators['rsi'] = float(rsi)
+                except Exception as e:
+                    logger.debug(f"RSI calculation error: {e}")
             
             # MACD (Moving Average Convergence Divergence)
             if len(prices) >= 26:
-                ema12 = self._calculate_ema(prices, 12)
-                ema26 = self._calculate_ema(prices, 26)
-                macd = ema12 - ema26
-                signal = self._calculate_ema(np.array([macd] * len(prices)), 9)[-1]
-                indicators['macd'] = float(macd[-1])
-                indicators['macd_signal'] = float(signal)
+                try:
+                    ema12 = self._calculate_ema(prices, 12)
+                    ema26 = self._calculate_ema(prices, 26)
+                    macd_line = ema12 - ema26
+                    signal_line = self._calculate_ema(macd_line, 9)
+                    
+                    indicators['macd'] = float(macd_line[-1])
+                    indicators['macd_signal'] = float(signal_line[-1])
+                    indicators['macd_histogram'] = float(macd_line[-1] - signal_line[-1])
+                except Exception as e:
+                    logger.debug(f"MACD calculation error: {e}")
             
             # Bollinger Bands
             if len(prices) >= 20:
-                sma = np.mean(prices[-20:])
-                std = np.std(prices[-20:])
-                indicators['bb_upper'] = float(sma + 2 * std)
-                indicators['bb_lower'] = float(sma - 2 * std)
-                indicators['bb_middle'] = float(sma)
+                try:
+                    sma = np.mean(prices[-20:])
+                    std = np.std(prices[-20:])
+                    indicators['bb_upper'] = float(sma + 2 * std)
+                    indicators['bb_lower'] = float(sma - 2 * std)
+                    indicators['bb_middle'] = float(sma)
+                except Exception as e:
+                    logger.debug(f"Bollinger Bands calculation error: {e}")
             
             # Stochastic Oscillator
             if len(prices) >= 14:
-                low = np.min(prices[-14:])
-                high = np.max(prices[-14:])
-                current = prices[-1]
-                k = 100 * (current - low) / (high - low) if high != low else 50
-                indicators['stochastic_k'] = float(k)
+                try:
+                    low = np.min(prices[-14:])
+                    high = np.max(prices[-14:])
+                    current = prices[-1]
+                    if high != low:
+                        k = 100 * (current - low) / (high - low)
+                    else:
+                        k = 50
+                    indicators['stochastic_k'] = float(k)
+                except Exception as e:
+                    logger.debug(f"Stochastic calculation error: {e}")
             
-            # ATR (Average True Range) - 波動性指標
+            # ATR (Average True Range)
             if len(prices) >= 14:
-                atr = self._calculate_atr(prices[-14:])
-                indicators['atr'] = float(atr)
+                try:
+                    atr = self._calculate_atr(prices[-14:])
+                    indicators['atr'] = float(atr)
+                except Exception as e:
+                    logger.debug(f"ATR calculation error: {e}")
             
         except Exception as e:
             logger.error(f"Error calculating technical indicators: {e}")
@@ -169,7 +204,8 @@ class SignalGenerator:
     
     def _calculate_ema(self, prices: np.ndarray, period: int) -> np.ndarray:
         """計算指數移動平均線"""
-        ema = np.zeros_like(prices)
+        prices = np.array(prices, dtype=float).flatten()
+        ema = np.zeros(len(prices))
         ema[0] = prices[0]
         multiplier = 2 / (period + 1)
         
@@ -180,8 +216,11 @@ class SignalGenerator:
     
     def _calculate_atr(self, prices: np.ndarray) -> float:
         """計算平均真實波幅"""
+        prices = np.array(prices, dtype=float).flatten()
+        if len(prices) < 2:
+            return 0.0
         tr = np.abs(np.diff(prices))
-        return np.mean(tr)
+        return float(np.mean(tr))
     
     def identify_support_resistance(
         self,
@@ -191,11 +230,12 @@ class SignalGenerator:
         """
         識別支持位和阻力位
         """
+        prices = np.array(prices, dtype=float).flatten()
         recent_prices = prices[-lookback:]
-        support = np.min(recent_prices)
-        resistance = np.max(recent_prices)
+        support = float(np.min(recent_prices))
+        resistance = float(np.max(recent_prices))
         
-        return float(support), float(resistance)
+        return support, resistance
     
     def calculate_momentum_score(
         self,
@@ -208,6 +248,11 @@ class SignalGenerator:
          1: 強烈看漲
         """
         try:
+            prices = np.array(prices, dtype=float).flatten()
+            
+            if len(prices) < 20:
+                return 0.0
+            
             # 計算短期和長期動量
             short_term = (prices[-1] - prices[-5]) / prices[-5]  # 5 期變化
             long_term = (prices[-1] - prices[-20]) / prices[-20]  # 20 期變化
@@ -216,9 +261,9 @@ class SignalGenerator:
             roc = short_term * 0.6 + long_term * 0.4
             
             # 限制在 -1 到 1 之間
-            momentum = np.clip(roc / 0.05, -1, 1)
+            momentum = float(np.clip(roc / 0.05, -1, 1))
             
-            return float(momentum)
+            return momentum
         
         except Exception as e:
             logger.error(f"Error calculating momentum: {e}")
@@ -233,14 +278,19 @@ class SignalGenerator:
         識別趨勢方向和強度
         """
         try:
+            prices = np.array(prices, dtype=float).flatten()
+            
+            if len(prices) < 60:
+                return TrendDirection.SIDEWAYS, 0.0
+            
             # 計算移動平均線
-            sma_short = np.mean(prices[-5:])
-            sma_medium = np.mean(prices[-20:])
-            sma_long = np.mean(prices[-60:])
+            sma_short = float(np.mean(prices[-5:]))
+            sma_medium = float(np.mean(prices[-20:]))
+            sma_long = float(np.mean(prices[-60:]))
             
             # 計算趨勢強度（基於價格與 MA 的距離）
             trend_strength = abs(current_price - sma_medium) / sma_medium
-            trend_strength = min(trend_strength, 1.0)  # 限制在 0-1
+            trend_strength = float(min(trend_strength, 1.0))  # 限制在 0-1
             
             # 判斷趨勢方向
             if sma_short > sma_medium > sma_long:
@@ -256,7 +306,7 @@ class SignalGenerator:
             else:
                 direction = TrendDirection.SIDEWAYS
             
-            return direction, float(trend_strength)
+            return direction, trend_strength
         
         except Exception as e:
             logger.error(f"Error identifying trend: {e}")
@@ -271,9 +321,14 @@ class SignalGenerator:
         檢測突破信號
         """
         try:
+            prices = np.array(prices, dtype=float).flatten()
+            
+            if len(prices) < 20:
+                return False
+            
             # 檢查是否突破 20 期高點或低點
-            recent_high = np.max(prices[-20:-1])
-            recent_low = np.min(prices[-20:-1])
+            recent_high = float(np.max(prices[-20:-1]))
+            recent_low = float(np.min(prices[-20:-1]))
             
             breakout_threshold = 0.002  # 0.2% 突破
             
@@ -311,20 +366,28 @@ class SignalGenerator:
             TradingSignal 對象或 None
         """
         try:
+            # 轉換為 numpy 數組並確保是 1D
+            price_history = np.array(price_history, dtype=float).flatten()
+            
             # 確保有足夠的歷史數據
             if len(price_history) < self.lookback_period:
-                logger.warning(f"Insufficient price history for {symbol}")
+                logger.warning(f"Insufficient price history for {symbol}: {len(price_history)} < {self.lookback_period}")
                 return None
             
             # 預測下一時間步價格和波動率
             if self.model is not None:
-                predicted_price, predicted_volatility = self.predict_next_price_and_volatility(
-                    price_history[-self.lookback_period:],
-                    symbol
-                )
+                try:
+                    predicted_price, predicted_volatility = self.predict_next_price_and_volatility(
+                        price_history[-self.lookback_period:].reshape(-1, 1),
+                        symbol
+                    )
+                except:
+                    predicted_price = float(current_price)
+                    price_returns = np.diff(price_history) / price_history[:-1]
+                    predicted_volatility = float(np.std(price_returns) * np.sqrt(252))
             else:
                 # 如果沒有模型，使用當前價格作為預測
-                predicted_price = current_price
+                predicted_price = float(current_price)
                 price_returns = np.diff(price_history) / price_history[:-1]
                 predicted_volatility = float(np.std(price_returns) * np.sqrt(252))
             
@@ -344,7 +407,7 @@ class SignalGenerator:
             is_breakout = self.detect_breakout(price_history, current_price)
             
             # 計算 RSI 用於信號確認
-            rsi = technical_indicators.get('rsi', 50)
+            rsi = technical_indicators.get('rsi', 50.0)
             
             # 生成信號
             signal_type, confidence = self._generate_signal_type(
@@ -376,7 +439,7 @@ class SignalGenerator:
                 risk = stop_loss - entry_price
                 reward = entry_price - take_profit
             
-            risk_reward_ratio = reward / risk if risk != 0 else 0
+            risk_reward_ratio = float(reward / risk if risk != 0 else 0)
             
             # 情感分數 (基於多個因素)
             sentiment_score = float(
@@ -427,15 +490,16 @@ class SignalGenerator:
         signals = []  # 累計信號分數
         
         # 1. 基於預測價格的信號
-        price_change = (predicted_price - current_price) / current_price
-        if price_change > 0.02:  # 預測上升 > 2%
-            signals.append(1.0)
-            confidence += 0.1
-        elif price_change < -0.02:  # 預測下跌 > 2%
-            signals.append(-1.0)
-            confidence += 0.1
-        else:
-            signals.append(0.0)
+        if current_price > 0:
+            price_change = (predicted_price - current_price) / current_price
+            if price_change > 0.02:  # 預測上升 > 2%
+                signals.append(1.0)
+                confidence += 0.1
+            elif price_change < -0.02:  # 預測下跌 > 2%
+                signals.append(-1.0)
+                confidence += 0.1
+            else:
+                signals.append(0.0)
         
         # 2. 基於 RSI 的信號
         if rsi < 30:  # 超賣
@@ -470,10 +534,10 @@ class SignalGenerator:
             confidence += 0.2
         
         # 計算綜合信號
-        overall_signal = np.mean(signals)
+        overall_signal = float(np.mean(signals)) if signals else 0.0
         
         # 限制置信度
-        confidence = min(confidence, 0.95)
+        confidence = float(min(confidence, 0.95))
         
         # 生成信號類型
         if overall_signal > 0.5:
@@ -502,28 +566,28 @@ class SignalGenerator:
         計算進場點、止盈點和止損點
         """
         # 使用波動率來調整距離
-        volatility_factor = max(predicted_volatility, 0.01)
+        volatility_factor = max(float(predicted_volatility), 0.01)
         
         if signal_type in [SignalType.STRONG_BUY, SignalType.BUY]:
             # 買入信號
             # 進場點：在支持位附近或當前價格稍低位置
-            entry_price = min(current_price, support * 1.001)
+            entry_price = float(min(current_price, support * 1.001))
             
             # 止損點：支持位下方
-            stop_loss = support * (1 - volatility_factor * 2)
+            stop_loss = float(support * (1 - volatility_factor * 2))
             
             # 止盈點：阻力位或更高
-            take_profit = resistance * (1 + volatility_factor)
+            take_profit = float(resistance * (1 + volatility_factor))
         
         else:
             # 賣出信號
             # 進場點：在阻力位附近或當前價格稍高位置
-            entry_price = max(current_price, resistance * 0.999)
+            entry_price = float(max(current_price, resistance * 0.999))
             
             # 止損點：阻力位上方
-            stop_loss = resistance * (1 + volatility_factor * 2)
+            stop_loss = float(resistance * (1 + volatility_factor * 2))
             
             # 止盈點：支持位或更低
-            take_profit = support * (1 - volatility_factor)
+            take_profit = float(support * (1 - volatility_factor))
         
-        return float(entry_price), float(take_profit), float(stop_loss)
+        return entry_price, take_profit, stop_loss
