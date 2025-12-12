@@ -21,3 +21,4 @@ apscheduler==3.10.4
 # redis==5.0.1  # commented out: not required for realtime bot
 # pandas-ta==0.3.14b0  # commented out: no compatible wheel for Python 3.11
 # python-telegram-bot==20.3  # commented out: Telegram notifications disabled
+google-generativeai>=0.3.0  # Gemini AI integration for signal validation
