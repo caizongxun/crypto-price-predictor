@@ -15,6 +15,7 @@ from src.discord_bot_handler import DiscordBotHandler
 from src.gemini_signal_validator import GeminiSignalValidator, GeminiAnalysis
 from src.multi_timeframe_analyzer import MultiTimeframeAnalyzer
 from src.technical_analysis import TechnicalAnalyzer
+from src.plotting import generate_prediction_chart # Added import
 
 # 設置日誌
 logging.basicConfig(
@@ -60,19 +61,17 @@ class RealtimeTradingBot:
         for symbol in self.symbols:
             try:
                 # 這裡我們使用 LSTM 作為主要模型，但代碼結構允許未來擴展
+                # output_size is 5 now
                 model_trainer = ModelTrainer(model_type='lstm', config={'hidden_size': 128, 'num_layers': 2})
                 
                 # 嘗試加載模型
                 model_path = f"models/saved_models/{symbol.replace('USDT', '')}_lstm_model.pth"
                 if os.path.exists(model_path):
                     logger.info(f"Loading model from {model_path}")
-                    # 注意：這裡我們需要確保加載的模型 output_size=5。
-                    # 如果舊模型是 output_size=1，加載時會報錯。
-                    # 為了安全起見，如果加載失敗，我們會捕獲異常並使用未訓練的新模型（會觸發重新訓練）
                     try:
                         model_trainer.load_model(model_path, input_size=17)
                         
-                        # 簡單檢查模型輸出尺寸
+                        # Check output size
                         if model_trainer.model.fc2.out_features != 5:
                             logger.warning(f"Model for {symbol} has wrong output size. Re-initializing.")
                             model_trainer.create_model(input_size=17) # Reset
@@ -156,6 +155,7 @@ class RealtimeTradingBot:
                 return
 
             current_price = df['close'].iloc[-1]
+            price_history = df['close'].values # Store for plotting
             logger.info(f"✅ Processing {symbol} - {len(df)} data points")
             
             # 2. 生成信號
@@ -223,8 +223,8 @@ class RealtimeTradingBot:
                     market_condition="Unknown", confidence_adjustment=0
                 )
 
-            # 5. 發送通知
-            self._send_discord_alert(signal, ai_analysis)
+            # 5. 發送通知 (Pass price history for plotting)
+            self._send_discord_alert(signal, ai_analysis, price_history)
             
             # 6. 更新全局狀態
             self._update_global_signal_state(signal, ai_analysis)
@@ -232,7 +232,7 @@ class RealtimeTradingBot:
         except Exception as e:
             logger.error(f"Error processing {symbol}: {e}", exc_info=True)
 
-    def _send_discord_alert(self, signal: TradingSignal, ai_analysis: GeminiAnalysis):
+    def _send_discord_alert(self, signal: TradingSignal, ai_analysis: GeminiAnalysis, price_history: np.ndarray):
         """發送 Discord 警報"""
         import discord
         
@@ -267,7 +267,14 @@ class RealtimeTradingBot:
         
         embed.set_footer(text="Crypto Price Predictor • AI Enhanced")
         
-        self.discord_bot.queue_embed(embed)
+        # Generate chart
+        chart_buf = generate_prediction_chart(signal.symbol, price_history, signal.predicted_prices)
+        file = None
+        if chart_buf:
+            file = discord.File(chart_buf, filename="prediction.png")
+            embed.set_image(url="attachment://prediction.png")
+        
+        self.discord_bot.queue_embed(embed, file)
         logger.info(f"✅ Signal queued for Discord for {signal.symbol}")
 
     def _update_global_signal_state(self, signal: TradingSignal, ai_analysis: GeminiAnalysis, filtered: bool = False):
@@ -275,7 +282,6 @@ class RealtimeTradingBot:
         
         # Calculate final price change from prediction
         final_pred_price = signal.predicted_prices[-1] if signal.predicted_prices else signal.current_price
-        price_change_pct = (final_pred_price - signal.current_price) / signal.current_price * 100
         
         signal_data = {
             'symbol': signal.symbol,
