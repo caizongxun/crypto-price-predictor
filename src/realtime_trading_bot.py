@@ -375,7 +375,49 @@ class RealtimeTradingBot:
         
         return prices
     
-    async def process_symbol(self, symbol: str) -> Optional[TradingSignal]:
+    def _send_signal_notification_sync(self, symbol: str, signal: TradingSignal):
+        """通過 Discord 發送信號通知 (同步版本)"""
+        try:
+            import discord
+            
+            if "BUY" in signal.signal_type.value:
+                color = discord.Color.green()
+            elif "SELL" in signal.signal_type.value:
+                color = discord.Color.red()
+            else:
+                color = discord.Color.yellow()
+            
+            embed = discord.Embed(
+                title=f"{signal.signal_type.value}",
+                description=f"**{symbol}USDT** 交易信號",
+                color=color,
+                timestamp=datetime.now()
+            )
+            
+            embed.add_field(name="💰 當前價格", value=f"${signal.current_price:,.2f}", inline=True)
+            embed.add_field(name="🎯 進場價", value=f"${signal.entry_price:,.2f}", inline=True)
+            embed.add_field(name="📊 信心度", value=f"{signal.confidence:.2%}", inline=True)
+            
+            embed.add_field(name="✅ 獲利目標", value=f"${signal.take_profit:,.2f}", inline=True)
+            embed.add_field(name="❌ 止損點", value=f"${signal.stop_loss:,.2f}", inline=True)
+            embed.add_field(name="⚖️ 風險回報比", value=f"{signal.risk_reward_ratio:.2f}", inline=True)
+            
+            embed.add_field(name="📈 趨勢", value=signal.trend_direction.value, inline=True)
+            embed.add_field(name="💪 趨勢強度", value=f"{signal.trend_strength:.2%}", inline=True)
+            embed.add_field(name="🔥 是否突破", value="✅ 是" if signal.is_breakout else "❌ 否", inline=True)
+            
+            embed.add_field(name="⚠️ 免責聲明", value="此信號僅供參考，請自行評估風險後決定交易。", inline=False)
+            
+            embed.set_footer(text="Crypto Price Predictor Bot")
+            
+            # 使用 discord_handler 的隊列發送，不直接使用 async/await
+            self.discord_handler.queue_embed(embed)
+            logger.info(f"✅ Signal queued for Discord for {symbol}")
+        
+        except Exception as e:
+            logger.error(f"Error queuing signal notification: {e}")
+    
+    def process_symbol(self, symbol: str) -> Optional[TradingSignal]:
         """處理單個交易對並生成交易信號"""
         try:
             # 獲取 K 線數據
@@ -412,7 +454,7 @@ class RealtimeTradingBot:
                 logger.info(f"📈 Signal generated for {symbol}: {signal.signal_type.value} (Confidence: {signal.confidence:.2%})")
                 
                 if self._should_send_signal(symbol, signal):
-                    await self._send_signal_notification(symbol, signal)
+                    self._send_signal_notification_sync(symbol, signal)
                     self.signal_history[symbol] = signal
                     self.last_signal_time[symbol] = datetime.now()
                 
@@ -437,56 +479,14 @@ class RealtimeTradingBot:
         
         return True
     
-    async def _send_signal_notification(self, symbol: str, signal: TradingSignal):
-        """通過 Discord 發送信號通知"""
-        try:
-            import discord
-            
-            if "BUY" in signal.signal_type.value:
-                color = discord.Color.green()
-            elif "SELL" in signal.signal_type.value:
-                color = discord.Color.red()
-            else:
-                color = discord.Color.yellow()
-            
-            embed = discord.Embed(
-                title=f"{signal.signal_type.value}",
-                description=f"**{symbol}USDT** 交易信號",
-                color=color,
-                timestamp=datetime.now()
-            )
-            
-            embed.add_field(name="💰 當前價格", value=f"${signal.current_price:,.2f}", inline=True)
-            embed.add_field(name="🎯 進場價", value=f"${signal.entry_price:,.2f}", inline=True)
-            embed.add_field(name="📊 信心度", value=f"{signal.confidence:.2%}", inline=True)
-            
-            embed.add_field(name="✅ 獲利目標", value=f"${signal.take_profit:,.2f}", inline=True)
-            embed.add_field(name="❌ 止損點", value=f"${signal.stop_loss:,.2f}", inline=True)
-            embed.add_field(name="⚖️ 風險回報比", value=f"{signal.risk_reward_ratio:.2f}", inline=True)
-            
-            embed.add_field(name="📈 趨勢", value=signal.trend_direction.value, inline=True)
-            embed.add_field(name="💪 趨勢強度", value=f"{signal.trend_strength:.2%}", inline=True)
-            embed.add_field(name="🔥 是否突破", value="✅ 是" if signal.is_breakout else "❌ 否", inline=True)
-            
-            embed.add_field(name="⚠️ 免責聲明", value="此信號僅供參考，請自行評估風險後決定交易。", inline=False)
-            
-            embed.set_footer(text="Crypto Price Predictor Bot")
-            
-            channel = self.discord_handler.bot.get_channel(int(os.getenv('DISCORD_CHANNEL_ID', '0')))
-            if channel:
-                await channel.send(embed=embed)
-                logger.info(f"✅ Signal notification sent to Discord for {symbol}")
-        
-        except Exception as e:
-            logger.error(f"Error sending signal notification: {e}")
-    
-    async def run_monitoring_loop(self):
+    def run_monitoring_loop(self):
         """運行持續監控循環"""
         logger.info("🚀 Starting real-time trading bot monitoring...")
         logger.info("📢 Discord Bot 通知已啓用")
         logger.info(f"⏱️  檢查頻率: 每 15 分鐘一次")
         
-        await asyncio.sleep(2)
+        import time
+        time.sleep(2)
         
         while True:
             try:
@@ -494,8 +494,10 @@ class RealtimeTradingBot:
                 logger.info(f"Scanning {len(self.symbols)} symbols at {datetime.now()}")
                 logger.info(f"{'='*70}")
                 
-                tasks = [self.process_symbol(symbol) for symbol in self.symbols]
-                results = await asyncio.gather(*tasks)
+                results = []
+                for symbol in self.symbols:
+                    result = self.process_symbol(symbol)
+                    results.append(result)
                 
                 signals_generated = sum(1 for r in results if r is not None)
                 strong_signals = sum(1 for r in results if r and r.confidence > 0.75)
@@ -503,19 +505,21 @@ class RealtimeTradingBot:
                 logger.info(f"📊 Generated {signals_generated} signals ({strong_signals} strong signals)")
                 logger.info(f"⏰ Next check in {self.check_frequency // 60} minutes...")
                 
-                await asyncio.sleep(self.check_frequency)
+                import time
+                time.sleep(self.check_frequency)
             
             except KeyboardInterrupt:
                 logger.info("⛔ Monitoring stopped by user")
                 break
             except Exception as e:
                 logger.error(f"Error in monitoring loop: {e}")
-                await asyncio.sleep(60)
+                import time
+                time.sleep(60)
     
     def start(self):
         """啟動機器人"""
         try:
-            asyncio.run(self.run_monitoring_loop())
+            self.run_monitoring_loop()
         except Exception as e:
             logger.error(f"Fatal error: {e}")
 
