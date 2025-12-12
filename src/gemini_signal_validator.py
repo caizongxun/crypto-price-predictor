@@ -1,15 +1,16 @@
 import os
 import logging
 import re
+import json
+import requests
 from typing import Dict, Optional
 from dataclasses import dataclass
-from groq import Groq
 
 logger = logging.getLogger(__name__)
 
 @dataclass
 class GeminiAnalysis:
-    """AI 分析結果 (保留原名以維持代碼兼容性)"""
+    """AI 分析結果"""
     is_valid: bool
     validity_score: float
     entry_price: Optional[float]
@@ -23,29 +24,20 @@ class GeminiAnalysis:
 class GeminiSignalValidator:
     """
     使用 Groq API (Llama-3-70b) 驗證交易信號
-    (類名保留為 GeminiSignalValidator 以維持與 main.py 的兼容性)
+    (使用 requests 直接調用 API，避免庫版本衝突)
     """
     
     def __init__(self, api_key: str):
-        """
-        初始化 Groq 驗證器
-        注意: 這裡傳入的 api_key 應該是 GROQ_API_KEY
-        """
-        try:
-            # 優先從環境變數讀取 GROQ_API_KEY，如果沒有則嘗試使用傳入的 key
-            groq_key = os.getenv('GROQ_API_KEY') or api_key
-            
-            # 移除所有不必要的參數，只傳入 api_key
-            self.client = Groq(
-                api_key=groq_key
-            )
-            
-            # 使用 Llama-3-70b 模型，性能極強且目前免費
-            self.model = "llama3-70b-8192"
-            logger.info(f"✅ Groq AI 已連接 (Model: {self.model})")
-        except Exception as e:
-            logger.error(f"❌ Groq 連接失敗: {e}")
-            self.client = None
+        self.api_key = os.getenv('GROQ_API_KEY') or api_key
+        self.api_url = "https://api.groq.com/openai/v1/chat/completions"
+        self.model = "llama3-70b-8192"
+        
+        if not self.api_key:
+            logger.error("❌ 未設置 GROQ_API_KEY")
+            self.enabled = False
+        else:
+            self.enabled = True
+            logger.info(f"✅ Groq AI 已就緒 (Direct API: {self.model})")
     
     def validate_signal(
         self,
@@ -60,7 +52,7 @@ class GeminiSignalValidator:
         market_context: str = ""
     ) -> Optional[GeminiAnalysis]:
         
-        if not self.client:
+        if not self.enabled:
             return self._create_default_analysis(signal_type, confidence)
         
         try:
@@ -91,24 +83,33 @@ class GeminiSignalValidator:
 6. 信心調整值 (-30 到 +30)
 7. 理由 (一句話)"""
 
-            chat_completion = self.client.chat.completions.create(
-                messages=[
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            }
+            
+            data = {
+                "model": self.model,
+                "messages": [
                     {
                         "role": "system",
                         "content": "你是一個嚴謹的量化交易員。只輸出關鍵數據，不輸出閒聊。"
                     },
                     {
                         "role": "user",
-                        "content": prompt,
+                        "content": prompt
                     }
                 ],
-                model=self.model,
-                temperature=0.5,
-                max_tokens=500, # 增加 max_tokens 以確保回答完整
-            )
+                "temperature": 0.5,
+                "max_tokens": 500
+            }
 
-            response_text = chat_completion.choices[0].message.content
-            # logger.info(f"Groq Response for {symbol}: {response_text[:100]}...") # Debug log
+            response = requests.post(self.api_url, headers=headers, json=data, timeout=10)
+            response.raise_for_status()
+            
+            result = response.json()
+            response_text = result['choices'][0]['message']['content']
+            
             return self._parse_response(response_text, signal_type, confidence, current_price)
         
         except Exception as e:
@@ -123,7 +124,7 @@ class GeminiSignalValidator:
         current_price: float
     ) -> GeminiAnalysis:
         try:
-            # 使用正則表達式提取數值，增加對 Groq 回應格式的容錯率
+            # 使用正則表達式提取數值
             validity_score = self._extract_number(response_text, ["評分", "score", "validity"], default=confidence)
             entry_adjustment = self._extract_number(response_text, ["進場", "entry"], default=0.0)
             stop_loss_pct = self._extract_number(response_text, ["止損", "stop", "sl"], default=2.0)
@@ -183,7 +184,7 @@ class GeminiSignalValidator:
                     # 尋找行內的數字
                     matches = re.findall(r'-?\d+(?:\.\d+)?', line)
                     if matches:
-                        return float(matches[-1]) # 取最後一個數字通常是值
+                        return float(matches[-1])
         return default
     
     @staticmethod
