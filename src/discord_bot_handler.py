@@ -7,43 +7,94 @@ import os
 from dotenv import load_dotenv
 import asyncio
 from queue import Queue
+import threading
+import sys
 
 load_dotenv()
 logger = logging.getLogger(__name__)
 
 
 class TrainingNotificationCog(commands.Cog):
-    """Discord Cog for training notifications"""
+    """Discord Cog for trading signal and training notifications"""
     
     def __init__(self, bot):
         self.bot = bot
         self.channel_id = int(os.getenv('DISCORD_CHANNEL_ID', '0'))
         self.role_id = int(os.getenv('DISCORD_ALERT_ROLE_ID', '0'))
         self.embed_queue = Queue()
-        self.process_queue.start()
+        
+        if self.channel_id > 0:
+            self.process_queue.start()
+            logger.info(f"✅ Queue processor started for channel {self.channel_id}")
+        else:
+            logger.warning("⚠️ DISCORD_CHANNEL_ID not set - notifications disabled")
     
     @tasks.loop(seconds=2)
     async def process_queue(self):
-        """Process embed queue"""
+        """Process embed queue and send messages"""
         try:
             while not self.embed_queue.empty():
-                embed = self.embed_queue.get_nowait()
-                channel = self.bot.get_channel(self.channel_id)
-                if channel:
-                    await channel.send(embed=embed)
+                try:
+                    embed = self.embed_queue.get_nowait()
+                    channel = self.bot.get_channel(self.channel_id)
+                    if channel:
+                        try:
+                            await channel.send(embed=embed)
+                            logger.debug(f"✅ Sent embed to {channel.name}")
+                        except discord.errors.Forbidden:
+                            logger.error(f"❌ No permission to send message in channel {self.channel_id}")
+                        except Exception as e:
+                            logger.error(f"❌ Failed to send embed: {e}")
+                    else:
+                        logger.error(f"❌ Channel {self.channel_id} not found")
+                except Exception as e:
+                    logger.error(f"Error getting from queue: {e}")
+                    break
         except Exception as e:
-            logger.error(f"Error processing embed queue: {e}")
+            logger.error(f"❌ Error processing embed queue: {e}")
     
     @process_queue.before_loop
     async def before_process_queue(self):
-        """Wait for bot to be ready"""
+        """Wait for bot to be ready before processing queue"""
         await self.bot.wait_until_ready()
+        logger.info("✅ Queue processor ready")
     
     @commands.Cog.listener()
     async def on_ready(self):
         """Called when bot is ready"""
-        logger.info(f'{self.bot.user} has connected to Discord!')
+        logger.info(f'✅ Discord Bot is online: {self.bot.user}')
         print(f'✅ Discord Bot is online: {self.bot.user}')
+    
+    @commands.command(name='recommendation', help='Get latest trading recommendation')
+    async def recommendation_command(self, ctx):
+        """Get latest trading recommendations"""
+        try:
+            embed = discord.Embed(
+                title="📊 Latest Trading Signals",
+                description="Loading latest signals...",
+                color=discord.Color.blue()
+            )
+            await ctx.send(embed=embed)
+            logger.info(f"✅ Recommendation command executed by {ctx.author}")
+        except Exception as e:
+            logger.error(f"Error in recommendation command: {e}")
+            await ctx.send(f"❌ Error: {e}")
+    
+    @commands.command(name='status', help='Get bot status')
+    async def status_command(self, ctx):
+        """Get bot status"""
+        try:
+            embed = discord.Embed(
+                title="🤖 Bot Status",
+                color=discord.Color.green()
+            )
+            embed.add_field(name="Status", value="✅ Online", inline=True)
+            embed.add_field(name="Latency", value=f"{self.bot.latency*1000:.0f}ms", inline=True)
+            await ctx.send(embed=embed)
+            logger.info(f"✅ Status command executed by {ctx.author}")
+        except Exception as e:
+            logger.error(f"Error in status command: {e}")
+            await ctx.send(f"❌ Error: {e}")
     
     async def send_training_notification(
         self,
@@ -108,7 +159,7 @@ class TrainingNotificationCog(commands.Cog):
             message_content = mention if mention else ""
             await channel.send(content=message_content, embed=embed)
             
-            logger.info(f"Training notification sent for {symbol}")
+            logger.info(f"✅ Training notification sent for {symbol}")
             return True
         
         except Exception as e:
@@ -185,7 +236,7 @@ class TrainingNotificationCog(commands.Cog):
             message_content = mention if mention else ""
             await channel.send(content=message_content, embed=embed)
             
-            logger.info("Batch training notification sent")
+            logger.info("✅ Batch training notification sent")
             return True
         
         except Exception as e:
@@ -219,7 +270,7 @@ class TrainingNotificationCog(commands.Cog):
             embed.set_footer(text=f"Crypto Price Predictor | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
             
             await channel.send(embed=embed)
-            logger.info(f"Status update sent: {title}")
+            logger.info(f"✅ Status update sent: {title}")
             return True
         
         except Exception as e:
@@ -228,11 +279,17 @@ class TrainingNotificationCog(commands.Cog):
 
 
 class DiscordBotHandler:
-    """Main Discord Bot Handler"""
+    """Main Discord Bot Handler with proper async/threading support"""
     
     def __init__(self):
         self.token = os.getenv('DISCORD_BOT_TOKEN')
         self.channel_id = os.getenv('DISCORD_CHANNEL_ID')
+        
+        if not self.token:
+            logger.error("❌ DISCORD_BOT_TOKEN not configured")
+            self.bot = None
+            self.training_cog = None
+            return
         
         # Create bot with intents
         intents = discord.Intents.default()
@@ -240,38 +297,62 @@ class DiscordBotHandler:
         intents.members = True
         
         self.bot = commands.Bot(command_prefix='!', intents=intents)
-        
-        # Add cogs
-        asyncio.get_event_loop().run_until_complete(self._setup_cogs())
-        
-        self.training_cog: Optional[TrainingNotificationCog] = None
+        self.training_cog = None
+        self.loop = None
+        self.thread = None
     
-    async def _setup_cogs(self):
-        """Setup bot cogs"""
-        cog = TrainingNotificationCog(self.bot)
-        await self.bot.add_cog(cog)
-        self.training_cog = cog
+    def _run_bot(self):
+        """Run bot in separate thread with its own event loop"""
+        try:
+            # Create new event loop for this thread
+            self.loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self.loop)
+            
+            # Add cog to bot
+            async def setup():
+                cog = TrainingNotificationCog(self.bot)
+                await self.bot.add_cog(cog)
+                self.training_cog = cog
+                logger.info("✅ TrainingNotificationCog loaded")
+            
+            # Run setup
+            self.loop.run_until_complete(setup())
+            
+            # Start bot
+            self.loop.run_until_complete(self.bot.start(self.token))
+        
+        except Exception as e:
+            logger.error(f"❌ Discord bot error: {e}", exc_info=True)
+        finally:
+            try:
+                self.loop.run_until_complete(self.loop.shutdown_asyncgens())
+            except:
+                pass
     
     def start(self):
-        """Start the bot"""
+        """Start the bot in background thread"""
         if not self.token:
-            logger.error("DISCORD_BOT_TOKEN not configured")
-            return False
+            logger.error("❌ DISCORD_BOT_TOKEN not set")
+            return
         
         try:
-            self.bot.run(self.token)
-            return True
+            # Start bot in daemon thread
+            self.thread = threading.Thread(target=self._run_bot, daemon=True)
+            self.thread.start()
+            logger.info("✅ Discord bot thread started")
         except Exception as e:
-            logger.error(f"Failed to start Discord bot: {e}")
-            return False
+            logger.error(f"❌ Failed to start Discord bot thread: {e}")
     
     def queue_embed(self, embed: discord.Embed):
-        """Queue an embed to be sent (synchronous method)"""
+        """Queue an embed to be sent (thread-safe)"""
         if self.training_cog:
-            self.training_cog.embed_queue.put(embed)
-            logger.info("Embed queued for sending")
+            try:
+                self.training_cog.embed_queue.put(embed)
+                logger.debug(f"✅ Embed queued (queue size: {self.training_cog.embed_queue.qsize()})")
+            except Exception as e:
+                logger.error(f"❌ Error queueing embed: {e}")
         else:
-            logger.warning("TrainingNotificationCog not available")
+            logger.warning("⚠️ TrainingNotificationCog not available yet, embed discarded")
     
     async def send_training_notification(
         self,
@@ -284,9 +365,8 @@ class DiscordBotHandler:
         error_msg: Optional[str] = None
     ) -> bool:
         """Send training notification via bot"""
-        cog = self.bot.get_cog('TrainingNotificationCog')
-        if cog:
-            return await cog.send_training_notification(
+        if self.training_cog:
+            return await self.training_cog.send_training_notification(
                 symbol, epochs, train_loss, val_loss, training_time, success, error_msg
             )
         return False
@@ -301,9 +381,8 @@ class DiscordBotHandler:
         detailed_results: Optional[List[dict]] = None
     ) -> bool:
         """Send batch training notification via bot"""
-        cog = self.bot.get_cog('TrainingNotificationCog')
-        if cog:
-            return await cog.send_batch_training_notification(
+        if self.training_cog:
+            return await self.training_cog.send_batch_training_notification(
                 symbols, successful_count, failed_count, total_time, avg_val_loss, detailed_results
             )
         return False
