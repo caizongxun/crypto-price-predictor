@@ -24,7 +24,8 @@ class TrainingNotificationCog(commands.Cog):
         self.bot = bot
         self.channel_id = int(os.getenv('DISCORD_CHANNEL_ID', '0'))
         self.role_id = int(os.getenv('DISCORD_ALERT_ROLE_ID', '0'))
-        self.embed_queue = Queue()
+        # Updated queue to hold (embed, file) tuples
+        self.message_queue = Queue()
         
         if self.channel_id > 0:
             self.process_queue.start()
@@ -34,27 +35,37 @@ class TrainingNotificationCog(commands.Cog):
     
     @tasks.loop(seconds=2)
     async def process_queue(self):
-        """Process embed queue and send messages"""
+        """Process message queue and send messages"""
         try:
-            while not self.embed_queue.empty():
+            while not self.message_queue.empty():
                 try:
-                    embed = self.embed_queue.get_nowait()
+                    item = self.message_queue.get_nowait()
+                    
+                    # Handle tuple (embed, file) or single embed
+                    if isinstance(item, tuple):
+                        embed, file = item
+                    else:
+                        embed, file = item, None
+                        
                     channel = self.bot.get_channel(self.channel_id)
                     if channel:
                         try:
-                            await channel.send(embed=embed)
-                            logger.debug(f"✅ Sent embed to {channel.name}")
+                            if file:
+                                await channel.send(embed=embed, file=file)
+                            else:
+                                await channel.send(embed=embed)
+                            logger.debug(f"✅ Sent message to {channel.name}")
                         except discord.errors.Forbidden:
                             logger.error(f"❌ No permission to send message in channel {self.channel_id}")
                         except Exception as e:
-                            logger.error(f"❌ Failed to send embed: {e}")
+                            logger.error(f"❌ Failed to send message: {e}")
                     else:
                         logger.error(f"❌ Channel {self.channel_id} not found")
                 except Exception as e:
                     logger.error(f"Error getting from queue: {e}")
                     break
         except Exception as e:
-            logger.error(f"❌ Error processing embed queue: {e}")
+            logger.error(f"❌ Error processing message queue: {e}")
     
     @process_queue.before_loop
     async def before_process_queue(self):
@@ -514,16 +525,19 @@ class DiscordBotHandler:
         except Exception as e:
             logger.error(f"❌ Failed to start Discord bot thread: {e}")
     
-    def queue_embed(self, embed: discord.Embed):
-        """Queue an embed to be sent (thread-safe)"""
+    def queue_embed(self, embed: discord.Embed, file: discord.File = None):
+        """Queue an embed (and optional file) to be sent (thread-safe)"""
         if self.training_cog:
             try:
-                self.training_cog.embed_queue.put(embed)
-                logger.debug(f"✅ Embed queued (queue size: {self.training_cog.embed_queue.qsize()})")
+                if file:
+                    self.training_cog.message_queue.put((embed, file))
+                else:
+                    self.training_cog.message_queue.put(embed)
+                logger.debug(f"✅ Message queued (queue size: {self.training_cog.message_queue.qsize()})")
             except Exception as e:
-                logger.error(f"❌ Error queueing embed: {e}")
+                logger.error(f"❌ Error queueing message: {e}")
         else:
-            logger.warning("⚠️ TrainingNotificationCog not available yet, embed discarded")
+            logger.warning("⚠️ TrainingNotificationCog not available yet, message discarded")
     
     def update_signal(self, symbol: str, signal_data: dict):
         """Update signal data in global storage (thread-safe)"""
