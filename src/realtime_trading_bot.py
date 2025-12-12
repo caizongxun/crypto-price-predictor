@@ -456,6 +456,23 @@ class RealtimeTradingBot:
             if signal:
                 logger.info(f"📈 Signal generated for {symbol}: {signal.signal_type.value} (Confidence: {signal.confidence:.2%})")
                 
+                # 更新信號到 Discord handler (用於 portfolio 命令)
+                signal_data = {
+                    'symbol': symbol,
+                    'signal_type': signal.signal_type.value,
+                    'current_price': signal.current_price,
+                    'predicted_price': signal.predicted_next_price,
+                    'confidence': signal.confidence,
+                    'trend_direction': signal.trend_direction.value,
+                    'trend_strength': signal.trend_strength,
+                    'rsi': signal.technical_indicators.get('rsi', 50),
+                    'entry_price': signal.entry_price,
+                    'take_profit': signal.take_profit,
+                    'stop_loss': signal.stop_loss,
+                    'timestamp': datetime.now().isoformat()
+                }
+                self.discord_handler.update_signal(symbol, signal_data)
+                
                 if self._should_send_signal(symbol, signal):
                     self._send_signal_notification_sync(symbol, signal)
                     self.signal_history[symbol] = signal
