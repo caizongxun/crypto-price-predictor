@@ -3,6 +3,7 @@ import logging
 import re
 from typing import Dict, Optional
 from dataclasses import dataclass
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -21,27 +22,18 @@ class GeminiAnalysis:
 
 class GeminiSignalValidator:
     """
-    使用 Gemini 2.0 Flash 驗證交易信號
-    
-    功能：
-    - 驗證信號真實性和有效性
-    - 生成最優進場價格建議
-    - 計算止損和止盈價格
-    - 評估當前市場狀態
-    - 根據多時間框架一致性調整信心度
+    使用 Gemini API 驗證交易信號
     """
     
     def __init__(self, api_key: str):
         """
         初始化 Gemini 驗證器
-        
-        Args:
-            api_key: Google Gemini API Key
         """
         try:
             genai.configure(api_key=api_key)
-            self.model = genai.GenerativeModel('gemini-2.0-flash-exp')
-            logger.info("✅ Gemini 2.0 Flash 已連接")
+            # 改用更穩定的 1.5-flash 模型，通常配額更寬鬆
+            self.model = genai.GenerativeModel('gemini-1.5-flash')
+            logger.info("✅ Gemini 1.5 Flash 已連接")
         except Exception as e:
             logger.error(f"❌ Gemini 連接失敗: {e}")
             self.model = None
@@ -58,28 +50,14 @@ class GeminiSignalValidator:
         technical_indicators: Dict,
         market_context: str = ""
     ) -> Optional[GeminiAnalysis]:
-        """
-        驗證交易信號並提供 AI 分析
         
-        Args:
-            symbol: 交易對符號 (如 BTCUSDT)
-            signal_type: 信號類型 (BUY/SELL/NEUTRAL)
-            confidence: 原始信心度 (0-100)
-            current_price: 當前價格
-            short_term_analysis: 短期 (1h) 分析結果
-            medium_term_analysis: 中期 (4h) 分析結果
-            long_term_analysis: 長期 (1d) 分析結果
-            technical_indicators: 技術指標 (RSI, MACD 等)
-            market_context: 額外的市場背景信息
-        
-        Returns:
-            GeminiAnalysis: AI 分析結果，包含進場建議、止損止盈等
-        """
         if not self.model:
             return self._create_default_analysis(signal_type, confidence)
         
         try:
-            # 構建給 Gemini 的 prompt
+            # 增加一個小的延遲以避免觸發速率限制
+            time.sleep(2)
+            
             prompt = f"""你是專業的加密貨幣交易分析師。請快速分析這個交易信號：
 
 【交易信息】
@@ -109,7 +87,6 @@ class GeminiSignalValidator:
 6. 信心度調整：-30 到 +30 之間
 7. 理由(一句話)"""
             
-            # 調用 Gemini API
             response = self.model.generate_content(
                 prompt,
                 generation_config={
@@ -128,7 +105,13 @@ class GeminiSignalValidator:
             )
         
         except Exception as e:
-            logger.error(f"❌ Gemini 分析失敗 ({symbol}): {e}")
+            # 判斷是否為配額錯誤 (429)
+            error_msg = str(e)
+            if "429" in error_msg or "Quota exceeded" in error_msg:
+                logger.warning(f"⚠️ Gemini 配額不足 ({symbol})，使用備用分析")
+            else:
+                logger.error(f"❌ Gemini 分析失敗 ({symbol}): {e}")
+            
             return self._create_default_analysis(signal_type, confidence)
     
     def _parse_gemini_response(
@@ -138,58 +121,39 @@ class GeminiSignalValidator:
         confidence: float,
         current_price: float
     ) -> GeminiAnalysis:
-        """
-        解析 Gemini 的回應並提取關鍵數據
-        
-        Args:
-            response_text: Gemini 返回的文本
-            signal_type: 原始信號類型
-            confidence: 原始信心度
-            current_price: 當前價格
-        
-        Returns:
-            GeminiAnalysis: 解析後的分析結果
-        """
         try:
-            # 提取關鍵數值
             is_valid = "是" in response_text or "valid" in response_text.lower()
             
-            # 有效性評分
             validity_score = self._extract_number(
                 response_text,
                 ["評分", "評分:", "score", "有效性"],
                 default=confidence
             )
             
-            # 進場價格偏移 (%)
             entry_adjustment = self._extract_number(
                 response_text,
                 ["進場", "entry", "偏移"],
                 default=0.0
             )
             
-            # 止損百分比
             stop_loss_pct = self._extract_number(
                 response_text,
                 ["止損", "stop", "risk"],
                 default=2.0
             )
             
-            # 止盈百分比
             take_profit_pct = self._extract_number(
                 response_text,
                 ["止盈", "profit", "target", "目標"],
                 default=5.0
             )
             
-            # 信心度調整
             confidence_adjustment = self._extract_number(
                 response_text,
                 ["調整", "adjust"],
                 default=0.0
             )
             
-            # 計算實際價格
             entry_price = current_price * (1 + entry_adjustment / 100)
             
             if signal_type in ["BUY", "STRONG_BUY"]:
@@ -199,12 +163,10 @@ class GeminiSignalValidator:
                 stop_loss = current_price * (1 + stop_loss_pct / 100)
                 take_profit = current_price * (1 - take_profit_pct / 100)
             
-            # 計算風險收益比
             potential_loss = abs(current_price - stop_loss)
             potential_gain = abs(take_profit - current_price)
             risk_reward = potential_gain / potential_loss if potential_loss > 0 else 0
             
-            # 提取市場狀態
             market_condition = "盤整"
             if "牛市" in response_text or "bullish" in response_text.lower():
                 market_condition = "牛市"
@@ -218,7 +180,7 @@ class GeminiSignalValidator:
                 stop_loss=stop_loss,
                 take_profit=take_profit,
                 risk_reward_ratio=risk_reward,
-                reasoning=response_text[:400],  # 限制長度
+                reasoning=response_text[:400],
                 market_condition=market_condition,
                 confidence_adjustment=max(-30, min(30, confidence_adjustment))
             )
@@ -229,20 +191,8 @@ class GeminiSignalValidator:
     
     @staticmethod
     def _extract_number(text: str, keywords: list, default: float = 0) -> float:
-        """
-        從文本中提取數字
-        
-        Args:
-            text: 要搜索的文本
-            keywords: 關鍵詞列表
-            default: 找不到時的默認值
-        
-        Returns:
-            float: 提取的數字
-        """
         try:
             for keyword in keywords:
-                # 匹配 "關鍵詞: 123" 或 "關鍵詞 123" 或 "關鍵詞(123)"
                 pattern = rf'{keyword}[:\s(]*?(-?\d+(?:\.\d+)?)'
                 match = re.search(pattern, text, re.IGNORECASE)
                 if match:
@@ -253,16 +203,6 @@ class GeminiSignalValidator:
     
     @staticmethod
     def _create_default_analysis(signal_type: str, confidence: float) -> GeminiAnalysis:
-        """
-        創建默認分析結果（當 Gemini 不可用時）
-        
-        Args:
-            signal_type: 信號類型
-            confidence: 原始信心度
-        
-        Returns:
-            GeminiAnalysis: 默認分析結果
-        """
         return GeminiAnalysis(
             is_valid=confidence > 65,
             validity_score=confidence,
@@ -270,7 +210,7 @@ class GeminiSignalValidator:
             stop_loss=None,
             take_profit=None,
             risk_reward_ratio=None,
-            reasoning="Gemini AI 不可用，使用默認分析",
+            reasoning="Gemini AI 配額已滿或不可用，使用原始分析",
             market_condition="未知",
             confidence_adjustment=0
         )
