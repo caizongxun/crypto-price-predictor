@@ -318,28 +318,47 @@ class SignalGenerator:
     def _generate_signal_type(self, current_price: float, predicted_price: float, rsi: float, momentum_score: float, trend_strength: float, trend_direction: TrendDirection, is_breakout: bool, technical_indicators: Dict) -> Tuple[SignalType, float]:
         confidence = 0.5
         signals = []
+        
+        # 模型預測是最重要的 - 削種的模型中心
         if current_price > 0:
             price_change = (predicted_price - current_price) / (current_price + 1e-8)
-            signals.append(1.0 if price_change > 0.01 else (-1.0 if price_change < -0.01 else 0.0))
-            if abs(price_change) > 0.01:
-                confidence += 0.1
+            # 增加模型預測的權重 (姓氏模型已經騏鑑了)
+            model_signal = 1.0 if price_change > 0.005 else (-1.0 if price_change < -0.005 else 0.0)
+            signals.append(model_signal)
+            # 模型預測有推佐信心增加
+            if abs(price_change) > 0.005:
+                confidence += 0.25  # 大幅度增加 (from 0.1)
+            logger.debug(f"Model signal: {model_signal:.2f}, price_change: {price_change*100:.2f}%, confidence boost: +0.25")
+        
+        # RSI 信號
         signals.append(1.0 if rsi < 30 else (-1.0 if rsi > 70 else 0.0))
         if rsi < 30 or rsi > 70:
-            confidence += 0.15
+            confidence += 0.10  # 減少 (from 0.15)
+        
+        # Momentum 信號
         signals.append(momentum_score)
-        confidence += abs(momentum_score) * 0.1
+        confidence += abs(momentum_score) * 0.08
+        
+        # 趨勢 信號
         trend_signal = (trend_strength if trend_direction in [TrendDirection.STRONG_UPTREND, TrendDirection.UPTREND] else (-trend_strength if trend_direction in [TrendDirection.STRONG_DOWNTREND, TrendDirection.DOWNTREND] else 0.0))
         signals.append(trend_signal)
-        confidence += abs(trend_signal) * 0.15
+        confidence += abs(trend_signal) * 0.10  # 減少 (from 0.15)
+        
+        # Breakout 信號
         if is_breakout:
             signals.append(1.0 if trend_direction in [TrendDirection.UPTREND, TrendDirection.STRONG_UPTREND] else -1.0)
-            confidence += 0.2
+            confidence += 0.15  # 減少 (from 0.2)
+        
         overall_signal = float(np.mean(signals)) if signals else 0.0
         confidence = float(min(confidence, 0.95))
-        if overall_signal > 0.5:
-            return (SignalType.STRONG_BUY, confidence) if confidence > 0.8 else (SignalType.BUY, confidence)
-        elif overall_signal < -0.5:
-            return (SignalType.STRONG_SELL, confidence) if confidence > 0.8 else (SignalType.SELL, confidence)
+        
+        logger.debug(f"Overall signal: {overall_signal:.2f}, confidence: {confidence:.2%}, signals: {[f'{s:.2f}' for s in signals]}")
+        
+        # 降低 BUY/SELL 的抨動阈值 (from 0.5 to 0.3)
+        if overall_signal > 0.3:
+            return (SignalType.STRONG_BUY, confidence) if confidence > 0.75 else (SignalType.BUY, confidence)
+        elif overall_signal < -0.3:
+            return (SignalType.STRONG_SELL, confidence) if confidence > 0.75 else (SignalType.SELL, confidence)
         return SignalType.NEUTRAL, 0.5
     
     def _calculate_entry_exit_points(self, current_price: float, support: float, resistance: float, trend_direction: TrendDirection, signal_type: SignalType, predicted_volatility: float) -> Tuple[float, float, float]:
