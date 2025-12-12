@@ -279,61 +279,41 @@ class RealtimeTradingBot:
             
             try:
                 if os.path.exists(model_path):
-                    # 創建三個子模型
-                    lstm_model = EnhancedLSTMModel(input_size=17, hidden_size=256, num_layers=4)
-                    gru_model = GRUModel(input_size=17, hidden_size=256, num_layers=4)
-                    transformer_model = TransformerEncoderModel(input_size=17, hidden_size=128, num_layers=3)
+                    logger.info(f"Loading model from {model_path}")
                     
-                    # 創建融合模型
-                    ensemble = EnsembleModel(lstm_model, gru_model, transformer_model)
-                    
-                    # 加載 state_dict (使用 strict=False 允許包裝的 keys)
+                    # 加載 state_dict
                     state_dict = torch.load(model_path, map_location=self.device)
                     
-                    # 試著直接加載（如果是融合模型保存的）
-                    try:
+                    # 檢查 state_dict 的結構
+                    first_key = list(state_dict.keys())[0]
+                    logger.info(f"First key in state_dict: {first_key}")
+                    
+                    # 判斷是否是包裝的 ensemble 模型
+                    if first_key.startswith('lstm_model.'):
+                        logger.info(f"Detected wrapped ensemble model for {symbol}")
+                        
+                        # 直接創建並加載 ensemble
+                        lstm_model = EnhancedLSTMModel(input_size=17, hidden_size=256, num_layers=4)
+                        gru_model = GRUModel(input_size=17, hidden_size=256, num_layers=4)
+                        transformer_model = TransformerEncoderModel(input_size=17, hidden_size=128, num_layers=3)
+                        ensemble = EnsembleModel(lstm_model, gru_model, transformer_model)
+                        
+                        # 使用 strict=False 加載
                         ensemble.load_state_dict(state_dict, strict=False)
-                        logger.info(f"✅ Loaded ensemble model for {symbol} (strict=False)")
-                    except Exception as e:
-                        # 如果還是失敗，表示 state_dict key 有前綴，需要移除
-                        logger.warning(f"⚠️ Direct load failed for {symbol}, attempting key remapping...")
+                        ensemble.eval()
+                        ensemble.to(self.device)
                         
-                        # 移除 'lstm_model.', 'gru_model.', 'transformer_model.', 'fusion.' 前綴
-                        new_state_dict = {}
-                        for key, value in state_dict.items():
-                            new_key = key
-                            if key.startswith('lstm_model.'):
-                                new_key = key.replace('lstm_model.', '', 1)
-                            elif key.startswith('gru_model.'):
-                                # 跳過 GRU 模型的 keys
-                                continue
-                            elif key.startswith('transformer_model.'):
-                                # 跳過 Transformer 模型的 keys
-                                continue
-                            elif key.startswith('fusion.'):
-                                # 跳過 fusion 層的 keys
-                                continue
-                            
-                            # 只保留對 LSTM 模型適用的 keys
-                            if new_key in dict(ensemble.lstm_model.named_parameters()).keys() or \
-                               new_key in dict(ensemble.lstm_model.named_buffers()).keys():
-                                new_state_dict[f'lstm_model.{new_key}'] = value
-                        
-                        # 為 GRU 和 Transformer 創建虛擬加載（使用隨機初始化）
-                        ensemble.load_state_dict(new_state_dict, strict=False)
-                        logger.info(f"✅ Loaded ensemble model for {symbol} (with key remapping)")
-                    
-                    # 設為評估模式
-                    ensemble.eval()
-                    ensemble.to(self.device)
-                    
-                    self.models[symbol] = ensemble
+                        self.models[symbol] = ensemble
+                        logger.info(f"✅ Loaded wrapped ensemble model for {symbol}")
+                    else:
+                        logger.warning(f"⚠️ Unknown state_dict format for {symbol}, first key: {first_key}")
+                        self.models[symbol] = None
                 else:
                     logger.warning(f"⚠️ Model not found for {symbol}")
                     self.models[symbol] = None
             
             except Exception as e:
-                logger.error(f"❌ Error loading model for {symbol}: {e}")
+                logger.error(f"❌ Error loading model for {symbol}: {str(e)[:200]}")
                 self.models[symbol] = None
     
     def fetch_klines_binance_us(self, symbol: str, interval: str = '1h', limit: int = 100) -> Optional[List]:
