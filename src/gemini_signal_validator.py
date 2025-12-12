@@ -23,14 +23,12 @@ class GeminiAnalysis:
 
 class GeminiSignalValidator:
     """
-    使用 Groq API 驗證交易信號
-    (使用 requests 直接調用 API，避免庫版本衝突)
+    使用 Groq API 驗證交易信號 (JSON Mode)
     """
     
     def __init__(self, api_key: str):
         self.api_key = os.getenv('GROQ_API_KEY') or api_key
         self.api_url = "https://api.groq.com/openai/v1/chat/completions"
-        # 更新為最新的 Groq 推薦模型
         self.model = "llama-3.3-70b-versatile"
         
         if not self.api_key:
@@ -57,32 +55,30 @@ class GeminiSignalValidator:
             return self._create_default_analysis(signal_type, confidence)
         
         try:
-            prompt = f"""你是專業的加密貨幣交易分析師。請分析以下交易信號並給出 JSON 格式的建議。
+            # 構建提示詞，強制要求 JSON 格式
+            prompt = f"""You are a professional crypto trading analyst. Analyze this signal and output strictly in JSON format.
 
-【交易數據】
-- 幣種: {symbol}
-- 價格: ${current_price:,.2f}
-- 信號: {signal_type} (原始信心: {confidence:.1f}%)
+Signal Data:
+- Symbol: {symbol}
+- Price: ${current_price:,.2f}
+- Signal: {signal_type} (Confidence: {confidence:.1f}%)
 
-【趨勢分析】
-- 1H (短線): {short_term_analysis.get('trend')}
-- 4H (中線): {medium_term_analysis.get('trend')}
-- 1D (長線): {long_term_analysis.get('trend')}
-
-【技術指標】
+Technical Context:
 - RSI: {technical_indicators.get('rsi', 'N/A')}
 - MACD: {technical_indicators.get('macd', 'N/A')}
-- Volume: {technical_indicators.get('volume_trend', 'N/A')}
+- Trend (1H/4H/1D): {short_term_analysis.get('trend')} / {medium_term_analysis.get('trend')} / {long_term_analysis.get('trend')}
 
-請嚴格按照以下格式回答（不要有廢話，只回數字和簡短理由）：
-
-1. 有效性評分 (0-100)
-2. 建議進場位偏移% (例如 -0.5 代表低於現價 0.5% 進場)
-3. 止損位偏移% (例如 2.0 代表風險 2%)
-4. 止盈位偏移% (例如 5.0 代表目標 5%)
-5. 市場狀態 (牛市/熊市/盤整)
-6. 信心調整值 (-30 到 +30)
-7. 理由 (一句話)"""
+Output a JSON object with these exact keys:
+{{
+    "validity_score": (0-100 float),
+    "entry_offset_pct": (float, e.g. -0.5 for 0.5% below price),
+    "stop_loss_offset_pct": (float, e.g. 2.0 for 2% risk),
+    "take_profit_offset_pct": (float, e.g. 5.0 for 5% target),
+    "market_condition": ("Bullish", "Bearish", or "Sideways"),
+    "confidence_adjustment": (float, -30 to +30),
+    "reasoning": (string, max 20 words summary)
+}}
+"""
 
             headers = {
                 "Authorization": f"Bearer {self.api_key}",
@@ -94,104 +90,82 @@ class GeminiSignalValidator:
                 "messages": [
                     {
                         "role": "system",
-                        "content": "你是一個嚴謹的量化交易員。只輸出關鍵數據，不輸出閒聊。"
+                        "content": "You are a quantitative trading assistant. Output only valid JSON."
                     },
                     {
                         "role": "user",
                         "content": prompt
                     }
                 ],
-                "temperature": 0.5,
-                "max_tokens": 1000
+                "temperature": 0.1, # 降低隨機性，確保格式穩定
+                "response_format": {"type": "json_object"}, # 強制 JSON 模式
+                "max_tokens": 500
             }
 
             response = requests.post(self.api_url, headers=headers, json=data, timeout=10)
             
-            # 如果失敗，記錄詳細錯誤訊息
             if response.status_code != 200:
                 logger.error(f"❌ Groq API Error {response.status_code}: {response.text}")
-                response.raise_for_status()
+                return self._create_default_analysis(signal_type, confidence)
             
             result = response.json()
             response_text = result['choices'][0]['message']['content']
             
-            return self._parse_response(response_text, signal_type, confidence, current_price)
+            # logger.info(f"🔍 Groq Raw Response ({symbol}): {response_text}") # Debug log
+            
+            return self._parse_json_response(response_text, signal_type, confidence, current_price)
         
         except Exception as e:
-            logger.error(f"❌ Groq 分析失敗 ({symbol}): {e}")
+            logger.error(f"❌ Groq 分析異常 ({symbol}): {e}")
             return self._create_default_analysis(signal_type, confidence)
     
-    def _parse_response(
+    def _parse_json_response(
         self,
-        response_text: str,
+        json_text: str,
         signal_type: str,
         confidence: float,
         current_price: float
     ) -> GeminiAnalysis:
         try:
-            # 使用正則表達式提取數值
-            validity_score = self._extract_number(response_text, ["評分", "score", "validity"], default=confidence)
-            entry_adjustment = self._extract_number(response_text, ["進場", "entry"], default=0.0)
-            stop_loss_pct = self._extract_number(response_text, ["止損", "stop", "sl"], default=2.0)
-            take_profit_pct = self._extract_number(response_text, ["止盈", "profit", "tp"], default=5.0)
-            confidence_adjustment = self._extract_number(response_text, ["調整", "adjust"], default=0.0)
+            data = json.loads(json_text)
             
-            # 判斷是否有效
-            is_valid = validity_score >= 60
+            validity_score = float(data.get("validity_score", confidence))
+            entry_offset = float(data.get("entry_offset_pct", 0.0))
+            sl_offset = float(data.get("stop_loss_offset_pct", 2.0))
+            tp_offset = float(data.get("take_profit_offset_pct", 5.0))
+            conf_adj = float(data.get("confidence_adjustment", 0.0))
             
             # 計算實際價格
-            entry_price = current_price * (1 + entry_adjustment / 100)
+            entry_price = current_price * (1 + entry_offset / 100)
             
-            if signal_type in ["BUY", "STRONG_BUY"]:
-                stop_loss = current_price * (1 - stop_loss_pct / 100)
-                take_profit = current_price * (1 + take_profit_pct / 100)
+            if "BUY" in signal_type:
+                stop_loss = current_price * (1 - sl_offset / 100)
+                take_profit = current_price * (1 + tp_offset / 100)
             else:
-                stop_loss = current_price * (1 + stop_loss_pct / 100)
-                take_profit = current_price * (1 - take_profit_pct / 100)
+                stop_loss = current_price * (1 + sl_offset / 100)
+                take_profit = current_price * (1 - tp_offset / 100)
             
             # 計算盈虧比
-            potential_loss = abs(entry_price - stop_loss)
-            potential_gain = abs(take_profit - entry_price)
-            risk_reward = potential_gain / potential_loss if potential_loss > 0 else 0
-            
-            # 提取市場狀態
-            market_condition = "盤整"
-            if "牛市" in response_text or "bullish" in response_text.lower():
-                market_condition = "牛市"
-            elif "熊市" in response_text or "bearish" in response_text.lower():
-                market_condition = "熊市"
-            
-            # 提取理由（移除數字行，只留文字）
-            lines = response_text.split('\n')
-            reasoning = next((line for line in reversed(lines) if len(line) > 10 and not any(c.isdigit() for c in line)), "AI 綜合技術指標分析")
+            risk = abs(entry_price - stop_loss)
+            reward = abs(take_profit - entry_price)
+            rr_ratio = reward / risk if risk > 0 else 0
             
             return GeminiAnalysis(
-                is_valid=is_valid,
-                validity_score=max(0, min(100, validity_score)),
+                is_valid=validity_score >= 60,
+                validity_score=validity_score,
                 entry_price=entry_price,
                 stop_loss=stop_loss,
                 take_profit=take_profit,
-                risk_reward_ratio=risk_reward,
-                reasoning=reasoning[:200],
-                market_condition=market_condition,
-                confidence_adjustment=max(-30, min(30, confidence_adjustment))
+                risk_reward_ratio=rr_ratio,
+                reasoning=data.get("reasoning", "AI Analysis"),
+                market_condition=data.get("market_condition", "Sideways"),
+                confidence_adjustment=conf_adj
             )
-        
+            
         except Exception as e:
-            logger.error(f"❌ 解析 Groq 回應失敗: {e}")
+            logger.error(f"❌ JSON 解析失敗: {e} | Raw: {json_text[:100]}")
             return self._create_default_analysis(signal_type, confidence)
-    
-    @staticmethod
-    def _extract_number(text: str, keywords: list, default: float = 0) -> float:
-        for line in text.split('\n'):
-            for keyword in keywords:
-                if keyword in line.lower():
-                    # 尋找行內的數字
-                    matches = re.findall(r'-?\d+(?:\.\d+)?', line)
-                    if matches:
-                        return float(matches[-1])
-        return default
-    
+
     @staticmethod
     def _create_default_analysis(signal_type: str, confidence: float) -> GeminiAnalysis:
         return GeminiAnalysis(
@@ -201,7 +175,7 @@ class GeminiSignalValidator:
             stop_loss=None,
             take_profit=None,
             risk_reward_ratio=None,
-            reasoning="AI 分析服務暫時不可用",
+            reasoning="AI 服務暫時不可用",
             market_condition="未知",
             confidence_adjustment=0
         )
