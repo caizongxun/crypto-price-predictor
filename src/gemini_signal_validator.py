@@ -31,9 +31,10 @@ class GeminiSignalValidator:
         """
         try:
             genai.configure(api_key=api_key)
-            # 改用更穩定的 1.5-flash 模型，通常配額更寬鬆
-            self.model = genai.GenerativeModel('gemini-1.5-flash')
-            logger.info("✅ Gemini 1.5 Flash 已連接")
+            # 404 error fix: 恢復使用 gemini-2.0-flash-exp (因為 1.5-flash 在目前環境不可用)
+            # 同時增加 retry 機制處理 429 配額問題
+            self.model = genai.GenerativeModel('gemini-2.0-flash-exp')
+            logger.info("✅ Gemini 2.0 Flash 已連接")
         except Exception as e:
             logger.error(f"❌ Gemini 連接失敗: {e}")
             self.model = None
@@ -55,8 +56,8 @@ class GeminiSignalValidator:
             return self._create_default_analysis(signal_type, confidence)
         
         try:
-            # 增加一個小的延遲以避免觸發速率限制
-            time.sleep(2)
+            # 增加較長的延遲以避免 429 Rate Limit
+            time.sleep(4) 
             
             prompt = f"""你是專業的加密貨幣交易分析師。請快速分析這個交易信號：
 
@@ -87,28 +88,45 @@ class GeminiSignalValidator:
 6. 信心度調整：-30 到 +30 之間
 7. 理由(一句話)"""
             
-            response = self.model.generate_content(
-                prompt,
-                generation_config={
-                    'temperature': 0.7,
-                    'top_p': 0.95,
-                    'top_k': 40,
-                    'max_output_tokens': 500,
-                }
-            )
-            
-            return self._parse_gemini_response(
-                response.text,
-                signal_type,
-                confidence,
-                current_price
-            )
-        
+            # 嘗試調用 API
+            try:
+                response = self.model.generate_content(
+                    prompt,
+                    generation_config={
+                        'temperature': 0.7,
+                        'top_p': 0.95,
+                        'top_k': 40,
+                        'max_output_tokens': 500,
+                    }
+                )
+                return self._parse_gemini_response(
+                    response.text,
+                    signal_type,
+                    confidence,
+                    current_price
+                )
+            except Exception as api_error:
+                # 如果是配額問題 (429)，等待後重試一次
+                if "429" in str(api_error) or "Quota exceeded" in str(api_error):
+                    logger.warning(f"⚠️ 配額滿，等待 10 秒後重試 {symbol}...")
+                    time.sleep(10)
+                    response = self.model.generate_content(prompt)
+                    return self._parse_gemini_response(
+                        response.text,
+                        signal_type,
+                        confidence,
+                        current_price
+                    )
+                else:
+                    raise api_error
+
         except Exception as e:
-            # 判斷是否為配額錯誤 (429)
+            # 記錄具體錯誤
             error_msg = str(e)
-            if "429" in error_msg or "Quota exceeded" in error_msg:
-                logger.warning(f"⚠️ Gemini 配額不足 ({symbol})，使用備用分析")
+            if "429" in error_msg:
+                logger.warning(f"⚠️ Gemini 配額耗盡 ({symbol})，跳過 AI 驗證")
+            elif "404" in error_msg:
+                logger.error(f"❌ Gemini 模型未找到 ({symbol}): 請檢查 API Key 或模型名稱")
             else:
                 logger.error(f"❌ Gemini 分析失敗 ({symbol}): {e}")
             
