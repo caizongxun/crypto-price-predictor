@@ -298,14 +298,17 @@ class SignalGenerator:
             rsi = technical_indicators.get('rsi', 50.0)
             
             signal_type, confidence = self._generate_signal_type(current_price, predicted_price, rsi, momentum_score, trend_strength, trend_direction, is_breakout, technical_indicators)
-            entry_price, take_profit, stop_loss = self._calculate_entry_exit_points(current_price, support, resistance, trend_direction, signal_type, predicted_volatility)
+            entry_price, take_profit, stop_loss = self._calculate_entry_exit_points(current_price, predicted_price, support, resistance, trend_direction, signal_type, predicted_volatility)
             
             if signal_type in [SignalType.STRONG_BUY, SignalType.BUY]:
                 risk = entry_price - stop_loss
                 reward = take_profit - entry_price
-            else:
+            elif signal_type in [SignalType.STRONG_SELL, SignalType.SELL]:
                 risk = stop_loss - entry_price
                 reward = entry_price - take_profit
+            else:
+                risk = abs(stop_loss - entry_price)
+                reward = abs(take_profit - entry_price)
             
             risk_reward_ratio = float(reward / (risk + 1e-8) if risk != 0 else 0)
             sentiment_score = float(momentum_score * 0.3 + (trend_strength if trend_direction in [TrendDirection.STRONG_UPTREND, TrendDirection.UPTREND] else -trend_strength) * 0.4 + (1 if is_breakout else 0) * 0.3)
@@ -369,14 +372,44 @@ class SignalGenerator:
             return (SignalType.STRONG_SELL, confidence) if confidence > 0.75 else (SignalType.SELL, confidence)
         return SignalType.NEUTRAL, 0.5
     
-    def _calculate_entry_exit_points(self, current_price: float, support: float, resistance: float, trend_direction: TrendDirection, signal_type: SignalType, predicted_volatility: float) -> Tuple[float, float, float]:
+    def _calculate_entry_exit_points(self, current_price: float, predicted_price: float, support: float, resistance: float, trend_direction: TrendDirection, signal_type: SignalType, predicted_volatility: float) -> Tuple[float, float, float]:
+        """
+        計算進場、獲利、止損點
+        
+        對於 BUY:
+            - Entry: 接近 current_price 或 support
+            - TP: 高於 current_price（向上）
+            - SL: 低於 current_price（向下保護）
+        
+        對於 SELL:
+            - Entry: 接近 current_price 或 resistance
+            - TP: 低於 current_price（向下）
+            - SL: 高於 current_price（向上保護）
+        """
         volatility_factor = max(float(predicted_volatility), 0.01)
+        
         if signal_type in [SignalType.STRONG_BUY, SignalType.BUY]:
-            entry_price = float(min(current_price, support * 1.001))
-            stop_loss = float(support * (1 - volatility_factor * 2))
-            take_profit = float(resistance * (1 + volatility_factor))
+            # 買入信號
+            entry_price = float(current_price)  # 使用當前價格作為進場點
+            # TP: 向上 (使用預測價格或 resistance)
+            take_profit = float(max(predicted_price, resistance))
+            # SL: 向下 (使用 support)
+            stop_loss = float(support)
+            
+        elif signal_type in [SignalType.STRONG_SELL, SignalType.SELL]:
+            # 賣出信號
+            entry_price = float(current_price)  # 使用當前價格作為進場點
+            # TP: 向下 (使用預測價格或 support)
+            take_profit = float(min(predicted_price, support))
+            # SL: 向上 (使用 resistance)
+            stop_loss = float(resistance)
+            
         else:
-            entry_price = float(max(current_price, resistance * 0.999))
-            stop_loss = float(resistance * (1 + volatility_factor * 2))
-            take_profit = float(support * (1 - volatility_factor))
+            # NEUTRAL - 使用保守的設置
+            entry_price = float(current_price)
+            # TP 和 SL 基於波動率
+            take_profit = float(current_price * (1 + volatility_factor))
+            stop_loss = float(current_price * (1 - volatility_factor))
+        
+        logger.debug(f"Entry: ${entry_price:.2f}, TP: ${take_profit:.2f}, SL: ${stop_loss:.2f}")
         return entry_price, take_profit, stop_loss
