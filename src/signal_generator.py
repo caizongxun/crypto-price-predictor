@@ -124,7 +124,7 @@ class SignalGenerator:
             
             logger.debug(f"✅ Features shape: {features.shape}, Last row non-zero: {np.any(features[-1] != 0)}")
             
-            # 正見化
+            # 正規化
             from sklearn.preprocessing import MinMaxScaler
             scaler = MinMaxScaler(feature_range=(0, 1))
             features_normalized = scaler.fit_transform(features)
@@ -166,13 +166,13 @@ class SignalGenerator:
             if was_training:
                 self.model.train()
             
-            # 反正見化：將正見化的價格轉換回真實價格
-            # 模型訓練時正見化了 close 價格，所以我們需要反正見化
+            # 反正規化：將正規化的價格轉換回真實價格
+            # 模型訓練時正規化了 close 價格，所以我們需要反正規化
             price_min = np.min(prices)
             price_max = np.max(prices)
             predicted_price = price_min + predicted_price_normalized * (price_max - price_min)
             
-            # 如果預測價格超出範圍，迣断到有效範圍
+            # 如果預測價格超出範圍，截斷到有效範圍
             predicted_price = np.clip(predicted_price, price_min * 0.8, price_max * 1.2)
             
             # 計算波動率
@@ -319,21 +319,25 @@ class SignalGenerator:
         confidence = 0.5
         signals = []
         
-        # 模型預測是最重要的 - 削種的模型中心
+        # 模型預測是最重要的 - 菜鳥模型中心
         if current_price > 0:
             price_change = (predicted_price - current_price) / (current_price + 1e-8)
-            # 增加模型預測的權重 (姓氏模型已經騏鑑了)
+            # 增加模型預測的權重 (訓練好的模型已經騎鑑了)
             model_signal = 1.0 if price_change > 0.005 else (-1.0 if price_change < -0.005 else 0.0)
             signals.append(model_signal)
-            # 模型預測有推佐信心增加
+            # 模型預測有推估信心增加
             if abs(price_change) > 0.005:
                 confidence += 0.25  # 大幅度增加 (from 0.1)
             logger.debug(f"Model signal: {model_signal:.2f}, price_change: {price_change*100:.2f}%, confidence boost: +0.25")
         
-        # RSI 信號
-        signals.append(1.0 if rsi < 30 else (-1.0 if rsi > 70 else 0.0))
+        # RSI 信號 - 超買/超賣區間
+        # BUY: RSI < 30 (超賣)
+        # SELL: RSI > 70 (超買)
+        rsi_signal = 1.0 if rsi < 30 else (-1.0 if rsi > 70 else 0.0)
+        signals.append(rsi_signal)
         if rsi < 30 or rsi > 70:
-            confidence += 0.10  # 減少 (from 0.15)
+            confidence += 0.10
+            logger.debug(f"RSI signal: {rsi_signal:.2f} (RSI={rsi:.1f})")
         
         # Momentum 信號
         signals.append(momentum_score)
@@ -342,21 +346,25 @@ class SignalGenerator:
         # 趨勢 信號
         trend_signal = (trend_strength if trend_direction in [TrendDirection.STRONG_UPTREND, TrendDirection.UPTREND] else (-trend_strength if trend_direction in [TrendDirection.STRONG_DOWNTREND, TrendDirection.DOWNTREND] else 0.0))
         signals.append(trend_signal)
-        confidence += abs(trend_signal) * 0.10  # 減少 (from 0.15)
+        confidence += abs(trend_signal) * 0.10
+        logger.debug(f"Trend signal: {trend_signal:.2f}, direction: {trend_direction.value}")
         
         # Breakout 信號
         if is_breakout:
-            signals.append(1.0 if trend_direction in [TrendDirection.UPTREND, TrendDirection.STRONG_UPTREND] else -1.0)
-            confidence += 0.15  # 減少 (from 0.2)
+            breakout_signal = 1.0 if trend_direction in [TrendDirection.UPTREND, TrendDirection.STRONG_UPTREND] else -1.0
+            signals.append(breakout_signal)
+            confidence += 0.15
+            logger.debug(f"Breakout signal: {breakout_signal:.2f}")
         
         overall_signal = float(np.mean(signals)) if signals else 0.0
         confidence = float(min(confidence, 0.95))
         
         logger.debug(f"Overall signal: {overall_signal:.2f}, confidence: {confidence:.2%}, signals: {[f'{s:.2f}' for s in signals]}")
         
-        # 降低 BUY/SELL 的抨動阈值 (from 0.5 to 0.3)
+        # BUY 信號邏輯 (positive signal)
         if overall_signal > 0.3:
             return (SignalType.STRONG_BUY, confidence) if confidence > 0.75 else (SignalType.BUY, confidence)
+        # SELL 信號邏輯 (negative signal) - 對稱的邏輯
         elif overall_signal < -0.3:
             return (SignalType.STRONG_SELL, confidence) if confidence > 0.75 else (SignalType.SELL, confidence)
         return SignalType.NEUTRAL, 0.5
