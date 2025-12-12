@@ -77,10 +77,18 @@ class SignalGenerator:
             
             X_tensor = torch.tensor(X, dtype=torch.float32).to(self.device)
             
+            # 設置模型為評估模式，禁用 Dropout 和 BatchNorm training 行為
+            was_training = self.model.training
+            self.model.eval()
+            
             with torch.no_grad():
                 # 預測價格
                 price_prediction = self.model(X_tensor)
                 predicted_price = price_prediction.cpu().numpy()[0][0]
+            
+            # 恢復原始模式
+            if was_training:
+                self.model.train()
             
             # 計算波動率（基於歷史價格變化）
             price_returns = np.diff(X[0, :, 0]) / X[0, :-1, 0]
@@ -89,8 +97,17 @@ class SignalGenerator:
             return float(predicted_price), float(predicted_volatility)
         
         except Exception as e:
-            logger.error(f"Failed to predict price for {symbol}: {e}")
-            return 0.0, 0.0
+            logger.warning(f"Model prediction failed for {symbol}: {e}")
+            # 返回當前價格作為備用預測
+            if len(X.shape) == 3:
+                current_price = X[0, -1, 0]
+            else:
+                current_price = X[-1, 0]
+            
+            price_returns = np.diff(X.flatten()[-60:]) if len(X.flatten()) > 1 else np.array([0])
+            volatility = float(np.std(price_returns) * np.sqrt(252)) if len(price_returns) > 0 else 0.01
+            
+            return float(current_price), float(volatility)
     
     def calculate_technical_indicators(self, prices: np.ndarray) -> Dict:
         """
