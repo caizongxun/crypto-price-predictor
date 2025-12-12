@@ -259,6 +259,7 @@ class RealtimeTradingBot:
         self.signal_generators = {}
         for symbol in self.symbols:
             model = self.models.get(symbol)
+            logger.info(f"🔧 SignalGenerator for {symbol}: model={'✅ Loaded' if model is not None else '❌ None'}, device={device}")
             self.signal_generators[symbol] = SignalGenerator(model=model, device=device)
         
         logger.info("📊 Signal Generators initialized for all symbols with ensemble models")
@@ -444,6 +445,8 @@ class RealtimeTradingBot:
             # 使用對應幣種的信號生成器（帶有模型）
             signal_gen = self.signal_generators.get(symbol)
             
+            logger.debug(f"🔧 Calling generate_signal for {symbol}, model={'✅' if signal_gen.model else '❌'}")
+            
             signal = signal_gen.generate_signal(
                 symbol=symbol,
                 current_price=current_price,
@@ -464,7 +467,7 @@ class RealtimeTradingBot:
                 return None
         
         except Exception as e:
-            logger.error(f"Error processing {symbol}: {e}")
+            logger.error(f"Error processing {symbol}: {e}", exc_info=True)
             return None
     
     def _should_send_signal(self, symbol: str, signal: TradingSignal) -> bool:
