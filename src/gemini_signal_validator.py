@@ -33,10 +33,13 @@ class GeminiSignalValidator:
         """
         try:
             # 優先從環境變數讀取 GROQ_API_KEY，如果沒有則嘗試使用傳入的 key
-            # (傳入的可能是舊的 GEMINI_KEY，所以優先讀取正確的環境變數)
             groq_key = os.getenv('GROQ_API_KEY') or api_key
             
-            self.client = Groq(api_key=groq_key)
+            # 移除所有不必要的參數，只傳入 api_key
+            self.client = Groq(
+                api_key=groq_key
+            )
+            
             # 使用 Llama-3-70b 模型，性能極強且目前免費
             self.model = "llama3-70b-8192"
             logger.info(f"✅ Groq AI 已連接 (Model: {self.model})")
