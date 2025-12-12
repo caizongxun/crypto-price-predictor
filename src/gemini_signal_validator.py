@@ -32,9 +32,8 @@ class GeminiSignalValidator:
         try:
             genai.configure(api_key=api_key)
             self.api_key = api_key
-            # 優先使用 1.5-flash (配額較多: 15 RPM)
-            # 如果失敗會自動降級
-            self.model_name = 'gemini-1.5-flash'
+            # 優先使用 2.0-flash-exp (雖然有 quota 限制但比較新)
+            self.model_name = 'gemini-2.0-flash-exp'
             self.model = self._init_model(self.model_name)
         except Exception as e:
             logger.error(f"❌ Gemini 連接失敗: {e}")
@@ -64,16 +63,13 @@ class GeminiSignalValidator:
         
         if not self.model:
             # 嘗試重新連接
-            self.model = self._init_model('gemini-1.5-flash')
+            self.model = self._init_model('gemini-2.0-flash-exp')
             if not self.model:
                 return self._create_default_analysis(signal_type, confidence)
         
         try:
-            # 智能延遲: 避免 429 錯誤
-            # 1.5-flash 允許 15 RPM (每4秒一請求)
-            # 2.0-flash-exp 允許 10 RPM (每6秒一請求)
-            delay = 4.0 if '1.5' in self.model_name else 6.0
-            time.sleep(delay)
+            # 增加基礎延遲，避免連續請求觸發 Rate Limit
+            time.sleep(5)
             
             prompt = f"""你是專業的加密貨幣交易分析師。請快速分析這個交易信號：
 
@@ -126,28 +122,27 @@ class GeminiSignalValidator:
         except Exception as e:
             error_msg = str(e)
             
-            # 處理 404 (模型未找到) -> 自動切換模型
-            if "404" in error_msg and retry_count < 2:
-                logger.warning(f"⚠️ 模型 {self.model_name} 未找到，嘗試切換...")
-                # 如果當前是 1.5，切換到 2.0-flash-exp
-                # 如果當前是 2.0，切換到 gemini-pro
-                if '1.5' in self.model_name:
-                    self.model_name = 'gemini-2.0-flash-exp'
-                else:
-                    self.model_name = 'gemini-pro'
+            # 處理 429 (配額滿) -> 智能等待
+            if ("429" in error_msg or "Quota" in error_msg) and retry_count < 2:
+                # 根據錯誤訊息中的 retry_delay 提取等待時間，或者默認 25 秒
+                wait_time = 25 
+                match = re.search(r'retry in (\d+)', error_msg)
+                if match:
+                    wait_time = int(match.group(1)) + 2 # 多加2秒緩衝
                 
-                self.model = self._init_model(self.model_name)
-                if self.model:
-                    time.sleep(2)
-                    return self._generate_with_retry(prompt, symbol, signal_type, confidence, current_price, retry_count + 1)
-
-            # 處理 429 (配額滿) -> 等待後重試
-            if ("429" in error_msg or "Quota" in error_msg) and retry_count < 1:
-                wait_time = 15  # 增加等待時間
                 logger.warning(f"⚠️ 配額滿 ({symbol})，等待 {wait_time} 秒後重試...")
                 time.sleep(wait_time)
                 return self._generate_with_retry(prompt, symbol, signal_type, confidence, current_price, retry_count + 1)
             
+            # 處理 404 -> 切換模型 (如果不支援 2.0 就切回 1.5)
+            if "404" in error_msg and retry_count < 1:
+                 if '2.0' in self.model_name:
+                    logger.warning(f"⚠️ 模型 2.0 未找到，降級至 1.5-flash...")
+                    self.model_name = 'gemini-1.5-flash'
+                    self.model = self._init_model(self.model_name)
+                    if self.model:
+                        return self._generate_with_retry(prompt, symbol, signal_type, confidence, current_price, retry_count + 1)
+
             logger.error(f"❌ Gemini 請求最終失敗: {error_msg}")
             return self._create_default_analysis(signal_type, confidence)
     
