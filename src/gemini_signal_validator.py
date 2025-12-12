@@ -23,14 +23,15 @@ class GeminiAnalysis:
 
 class GeminiSignalValidator:
     """
-    使用 Groq API (Llama-3-70b) 驗證交易信號
+    使用 Groq API 驗證交易信號
     (使用 requests 直接調用 API，避免庫版本衝突)
     """
     
     def __init__(self, api_key: str):
         self.api_key = os.getenv('GROQ_API_KEY') or api_key
         self.api_url = "https://api.groq.com/openai/v1/chat/completions"
-        self.model = "llama3-70b-8192"
+        # 更新為最新的 Groq 推薦模型
+        self.model = "llama-3.3-70b-versatile"
         
         if not self.api_key:
             logger.error("❌ 未設置 GROQ_API_KEY")
@@ -101,11 +102,15 @@ class GeminiSignalValidator:
                     }
                 ],
                 "temperature": 0.5,
-                "max_tokens": 500
+                "max_tokens": 1000
             }
 
             response = requests.post(self.api_url, headers=headers, json=data, timeout=10)
-            response.raise_for_status()
+            
+            # 如果失敗，記錄詳細錯誤訊息
+            if response.status_code != 200:
+                logger.error(f"❌ Groq API Error {response.status_code}: {response.text}")
+                response.raise_for_status()
             
             result = response.json()
             response_text = result['choices'][0]['message']['content']
