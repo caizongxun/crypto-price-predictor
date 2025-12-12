@@ -55,28 +55,39 @@ class GeminiSignalValidator:
             return self._create_default_analysis(signal_type, confidence)
         
         try:
-            # 構建提示詞，強制要求 JSON 格式
-            prompt = f"""You are a professional crypto trading analyst. Analyze this signal and output strictly in JSON format.
+            # 構建提示詞，加入評分指南以鼓勵更合理的給分
+            prompt = f"""You are a Growth-Oriented Crypto Analyst. Analyze this potential trade setup.
 
 Signal Data:
 - Symbol: {symbol}
 - Price: ${current_price:,.2f}
-- Signal: {signal_type} (Confidence: {confidence:.1f}%)
+- Signal: {signal_type} (Model Confidence: {confidence:.1f}%)
 
 Technical Context:
-- RSI: {technical_indicators.get('rsi', 'N/A')}
+- RSI: {technical_indicators.get('rsi', 'N/A')} (Consider oversold < 30, overbought > 70)
 - MACD: {technical_indicators.get('macd', 'N/A')}
-- Trend (1H/4H/1D): {short_term_analysis.get('trend')} / {medium_term_analysis.get('trend')} / {long_term_analysis.get('trend')}
+- Trends (1H/4H/1D): {short_term_analysis.get('trend')} / {medium_term_analysis.get('trend')} / {long_term_analysis.get('trend')}
 
-Output a JSON object with these exact keys:
+Scoring Guide:
+- 80-100: Excellent setup (Strong trend alignment + good indicators)
+- 60-79: Good potential (Some mixed signals but overall positive structure)
+- 40-59: Weak/Neutral (Sideways or conflicting signals, only take if low risk)
+- 0-39: Bad setup (Counter-trend or dangerous)
+
+Instruction:
+- Even if the trend is NEUTRAL, look for reversal signs or consolidation breakouts.
+- Don't be too conservative. If RSI is good or trend is starting, give at least 60-65.
+- Output strictly in JSON.
+
+Output JSON structure:
 {{
-    "validity_score": (0-100 float),
-    "entry_offset_pct": (float, e.g. -0.5 for 0.5% below price),
-    "stop_loss_offset_pct": (float, e.g. 2.0 for 2% risk),
-    "take_profit_offset_pct": (float, e.g. 5.0 for 5% target),
-    "market_condition": ("Bullish", "Bearish", or "Sideways"),
+    "validity_score": (float 0-100),
+    "entry_offset_pct": (float, e.g. -0.2),
+    "stop_loss_offset_pct": (float, e.g. 2.0),
+    "take_profit_offset_pct": (float, e.g. 5.0),
+    "market_condition": ("Bullish", "Bearish", "Sideways"),
     "confidence_adjustment": (float, -30 to +30),
-    "reasoning": (string, max 20 words summary)
+    "reasoning": (string, max 15 words)
 }}
 """
 
@@ -90,15 +101,15 @@ Output a JSON object with these exact keys:
                 "messages": [
                     {
                         "role": "system",
-                        "content": "You are a quantitative trading assistant. Output only valid JSON."
+                        "content": "You are a savvy trading assistant looking for opportunities. Output strictly valid JSON."
                     },
                     {
                         "role": "user",
                         "content": prompt
                     }
                 ],
-                "temperature": 0.1, # 降低隨機性，確保格式穩定
-                "response_format": {"type": "json_object"}, # 強制 JSON 模式
+                "temperature": 0.3, # 稍微提高溫度，允許更多可能性
+                "response_format": {"type": "json_object"},
                 "max_tokens": 500
             }
 
@@ -110,8 +121,6 @@ Output a JSON object with these exact keys:
             
             result = response.json()
             response_text = result['choices'][0]['message']['content']
-            
-            # logger.info(f"🔍 Groq Raw Response ({symbol}): {response_text}") # Debug log
             
             return self._parse_json_response(response_text, signal_type, confidence, current_price)
         
