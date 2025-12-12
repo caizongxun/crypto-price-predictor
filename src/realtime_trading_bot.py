@@ -506,6 +506,11 @@ class RealtimeTradingBot:
                         logger.info(f"✨ Gemini Analysis: Valid={gemini_analysis.is_valid}, Score={gemini_analysis.validity_score}")
                 
                 # 更新信號到 Discord handler (用於 portfolio 命令)
+                # FIX: 確保數值不為 None 或 0，如果有 AI 分析則優先使用，否則回退到基礎信號
+                entry_price = (gemini_analysis.entry_price if gemini_analysis and gemini_analysis.entry_price is not None else signal.entry_price)
+                take_profit = (gemini_analysis.take_profit if gemini_analysis and gemini_analysis.take_profit is not None else signal.take_profit)
+                stop_loss = (gemini_analysis.stop_loss if gemini_analysis and gemini_analysis.stop_loss is not None else signal.stop_loss)
+                
                 signal_data = {
                     'symbol': symbol,
                     'signal_type': signal.signal_type.value,
@@ -515,9 +520,9 @@ class RealtimeTradingBot:
                     'trend_direction': signal.trend_direction.value,
                     'trend_strength': signal.trend_strength,
                     'rsi': signal.technical_indicators.get('rsi', 50),
-                    'entry_price': gemini_analysis.entry_price if gemini_analysis else signal.entry_price,
-                    'take_profit': gemini_analysis.take_profit if gemini_analysis else signal.take_profit,
-                    'stop_loss': gemini_analysis.stop_loss if gemini_analysis else signal.stop_loss,
+                    'entry_price': entry_price,
+                    'take_profit': take_profit,
+                    'stop_loss': stop_loss,
                     'timestamp': datetime.now().isoformat(),
                     'ai_validity': gemini_analysis.validity_score if gemini_analysis else None
                 }
