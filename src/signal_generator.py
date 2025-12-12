@@ -135,10 +135,10 @@ class SignalGenerator:
             logger.error(f"❌ Error preparing features: {e}", exc_info=True)
             return None
     
-    def predict_next_price_and_volatility(self, prices: np.ndarray, symbol: str) -> Tuple[float, float]:
+    def predict_next_price_and_volatility(self, prices: np.ndarray, symbol: str, current_price: float) -> Tuple[float, float]:
         try:
             prices = np.array(prices, dtype=float).flatten()
-            logger.info(f"🤖 [Model Prediction] {symbol}: Input {len(prices)} prices")
+            logger.info(f"🤖 [Model Prediction] {symbol}: Input {len(prices)} prices, Current: ${current_price:.2f}")
             
             # 準備 17 個特徵
             features = self.prepare_features(prices)
@@ -179,19 +179,20 @@ class SignalGenerator:
             price_returns = np.diff(prices) / (prices[:-1] + 1e-8)
             predicted_volatility = float(np.std(price_returns) * np.sqrt(252))
             
-            logger.info(f"✅ Model prediction for {symbol}: ${predicted_price:.2f} (normalized: {predicted_price_normalized:.4f}, vol: {predicted_volatility:.4f})")
+            # 計算價格變化百分比
+            price_change_pct = (predicted_price - current_price) / (current_price + 1e-8) * 100
+            
+            logger.info(f"✅ Model prediction for {symbol}: ${predicted_price:.2f} | Change: {price_change_pct:+.2f}% (normalized: {predicted_price_normalized:.4f}, vol: {predicted_volatility:.4f})")
             return float(predicted_price), float(predicted_volatility)
         
         except Exception as e:
             logger.warning(f"⚠️ Model prediction failed for {symbol}: {str(e)[:100]}")
             try:
                 prices = np.array(prices, dtype=float).flatten()
-                current_price = float(prices[-1])
                 price_returns = np.diff(prices) / (prices[:-1] + 1e-8)
                 volatility = float(np.std(price_returns) * np.sqrt(252))
                 logger.info(f"↩️ Fallback for {symbol}: current_price=${current_price:.2f}")
             except:
-                current_price = 1.0
                 volatility = 0.02
             return current_price, volatility
     
@@ -278,7 +279,7 @@ class SignalGenerator:
             
             if self.model is not None:
                 try:
-                    predicted_price, predicted_volatility = self.predict_next_price_and_volatility(price_history[-self.lookback_period:], symbol)
+                    predicted_price, predicted_volatility = self.predict_next_price_and_volatility(price_history[-self.lookback_period:], symbol, current_price)
                 except Exception as e:
                     logger.warning(f"Model prediction error for {symbol}: {e}")
                     predicted_price = float(current_price)
@@ -319,8 +320,8 @@ class SignalGenerator:
         signals = []
         if current_price > 0:
             price_change = (predicted_price - current_price) / (current_price + 1e-8)
-            signals.append(1.0 if price_change > 0.02 else (-1.0 if price_change < -0.02 else 0.0))
-            if abs(price_change) > 0.02:
+            signals.append(1.0 if price_change > 0.01 else (-1.0 if price_change < -0.01 else 0.0))
+            if abs(price_change) > 0.01:
                 confidence += 0.1
         signals.append(1.0 if rsi < 30 else (-1.0 if rsi > 70 else 0.0))
         if rsi < 30 or rsi > 70:
