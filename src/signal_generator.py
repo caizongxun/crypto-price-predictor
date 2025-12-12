@@ -99,15 +99,11 @@ class SignalGenerator:
         except Exception as e:
             logger.warning(f"Model prediction failed for {symbol}: {e}")
             # 返回當前價格作為備用預測
-            if len(X.shape) == 3:
-                current_price = X[0, -1, 0]
-            else:
-                current_price = X[-1, 0]
-            
-            price_returns = np.diff(X.flatten()[-60:]) if len(X.flatten()) > 1 else np.array([0])
+            current_price = float(X[0, -1, 0])
+            price_returns = np.diff(X[0, :, 0]) / X[0, :-1, 0]
             volatility = float(np.std(price_returns) * np.sqrt(252)) if len(price_returns) > 0 else 0.01
             
-            return float(current_price), float(volatility)
+            return current_price, volatility
     
     def calculate_technical_indicators(self, prices: np.ndarray) -> Dict:
         """
