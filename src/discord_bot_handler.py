@@ -5,6 +5,8 @@ from datetime import datetime
 from typing import Optional, List
 import os
 from dotenv import load_dotenv
+import asyncio
+from queue import Queue
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -17,6 +19,25 @@ class TrainingNotificationCog(commands.Cog):
         self.bot = bot
         self.channel_id = int(os.getenv('DISCORD_CHANNEL_ID', '0'))
         self.role_id = int(os.getenv('DISCORD_ALERT_ROLE_ID', '0'))
+        self.embed_queue = Queue()
+        self.process_queue.start()
+    
+    @tasks.loop(seconds=2)
+    async def process_queue(self):
+        """Process embed queue"""
+        try:
+            while not self.embed_queue.empty():
+                embed = self.embed_queue.get_nowait()
+                channel = self.bot.get_channel(self.channel_id)
+                if channel:
+                    await channel.send(embed=embed)
+        except Exception as e:
+            logger.error(f"Error processing embed queue: {e}")
+    
+    @process_queue.before_loop
+    async def before_process_queue(self):
+        """Wait for bot to be ready"""
+        await self.bot.wait_until_ready()
     
     @commands.Cog.listener()
     async def on_ready(self):
@@ -227,7 +248,9 @@ class DiscordBotHandler:
     
     async def _setup_cogs(self):
         """Setup bot cogs"""
-        await self.bot.add_cog(TrainingNotificationCog(self.bot))
+        cog = TrainingNotificationCog(self.bot)
+        await self.bot.add_cog(cog)
+        self.training_cog = cog
     
     def start(self):
         """Start the bot"""
@@ -241,6 +264,14 @@ class DiscordBotHandler:
         except Exception as e:
             logger.error(f"Failed to start Discord bot: {e}")
             return False
+    
+    def queue_embed(self, embed: discord.Embed):
+        """Queue an embed to be sent (synchronous method)"""
+        if self.training_cog:
+            self.training_cog.embed_queue.put(embed)
+            logger.info("Embed queued for sending")
+        else:
+            logger.warning("TrainingNotificationCog not available")
     
     async def send_training_notification(
         self,
@@ -276,6 +307,3 @@ class DiscordBotHandler:
                 symbols, successful_count, failed_count, total_time, avg_val_loss, detailed_results
             )
         return False
-
-
-import asyncio
