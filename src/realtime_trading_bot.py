@@ -1,14 +1,16 @@
 import asyncio
 import logging
 import json
+import threading
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 import numpy as np
 import pandas as pd
-from binance.client import Client
-from binance.exceptions import BinanceAPIException
 from dotenv import load_dotenv
 import os
+import requests
+import torch
+import torch.nn as nn
 
 from src.signal_generator import SignalGenerator, TradingSignal
 from src.discord_bot_handler import DiscordBotHandler
@@ -17,230 +19,463 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 
-class RealtimeTradingBot:
-    """實時交易信號機器人"""
-    
-    def __init__(
-        self,
-        model=None,
-        api_key: str = None,
-        api_secret: str = None,
-        device: str = 'cuda'
-    ):
-        self.api_key = api_key or os.getenv('BINANCE_API_KEY')
-        self.api_secret = api_secret or os.getenv('BINANCE_API_SECRET')
-        self.client = Client(self.api_key, self.api_secret)
+# ===== 定義模型架構（與訓練時完全相同）=====
+
+class EnhancedLSTMModel(nn.Module):
+    """Enhanced LSTM with batch norm and better regularization"""
+    def __init__(self, input_size: int, hidden_size: int = 256, num_layers: int = 4):
+        super(EnhancedLSTMModel, self).__init__()
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
         
-        self.signal_generator = SignalGenerator(model=model, device=device)
-        self.discord_handler = DiscordBotHandler()  # 只保留 Discord
+        self.input_bn = nn.BatchNorm1d(input_size)
+        self.lstm = nn.LSTM(
+            input_size, 
+            hidden_size, 
+            num_layers,
+            batch_first=True,
+            dropout=0.4 if num_layers > 1 else 0,
+            bidirectional=True
+        )
+        
+        self.layer_norm = nn.LayerNorm(hidden_size * 2)
+        self.attention = nn.MultiheadAttention(
+            hidden_size * 2,
+            num_heads=16,
+            dropout=0.3,
+            batch_first=True
+        )
+        
+        self.fc = nn.Sequential(
+            nn.Linear(hidden_size * 2, 512),
+            nn.BatchNorm1d(512),
+            nn.ReLU(),
+            nn.Dropout(0.4),
+            
+            nn.Linear(512, 256),
+            nn.BatchNorm1d(256),
+            nn.ReLU(),
+            nn.Dropout(0.4),
+            
+            nn.Linear(256, 128),
+            nn.BatchNorm1d(128),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            
+            nn.Linear(64, 1)
+        )
+    
+    def forward(self, x):
+        batch_size = x.shape[0]
+        x = x.view(-1, x.shape[-1])
+        x = self.input_bn(x)
+        x = x.view(batch_size, -1, x.shape[-1])
+        
+        lstm_out, _ = self.lstm(x)
+        lstm_out = self.layer_norm(lstm_out)
+        
+        attn_out, _ = self.attention(lstm_out, lstm_out, lstm_out)
+        last_out = attn_out[:, -1, :]
+        
+        output = self.fc(last_out)
+        return output
+
+
+class GRUModel(nn.Module):
+    """Enhanced GRU with batch norm"""
+    def __init__(self, input_size: int, hidden_size: int = 256, num_layers: int = 4):
+        super(GRUModel, self).__init__()
+        
+        self.input_bn = nn.BatchNorm1d(input_size)
+        
+        self.gru = nn.GRU(
+            input_size,
+            hidden_size,
+            num_layers,
+            batch_first=True,
+            dropout=0.4 if num_layers > 1 else 0,
+            bidirectional=True
+        )
+        
+        self.layer_norm = nn.LayerNorm(hidden_size * 2)
+        
+        self.fc = nn.Sequential(
+            nn.Linear(hidden_size * 2, 512),
+            nn.BatchNorm1d(512),
+            nn.ReLU(),
+            nn.Dropout(0.4),
+            
+            nn.Linear(512, 256),
+            nn.BatchNorm1d(256),
+            nn.ReLU(),
+            nn.Dropout(0.4),
+            
+            nn.Linear(256, 128),
+            nn.BatchNorm1d(128),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            
+            nn.Linear(64, 1)
+        )
+    
+    def forward(self, x):
+        batch_size = x.shape[0]
+        x = x.view(-1, x.shape[-1])
+        x = self.input_bn(x)
+        x = x.view(batch_size, -1, x.shape[-1])
+        
+        gru_out, _ = self.gru(x)
+        gru_out = self.layer_norm(gru_out)
+        
+        last_out = gru_out[:, -1, :]
+        output = self.fc(last_out)
+        return output
+
+
+class TransformerEncoderModel(nn.Module):
+    """Transformer-based model for better sequence learning"""
+    def __init__(self, input_size: int, hidden_size: int = 128, num_layers: int = 3):
+        super(TransformerEncoderModel, self).__init__()
+        
+        self.input_projection = nn.Linear(input_size, hidden_size)
+        self.positional_encoding = nn.Parameter(torch.randn(1, 60, hidden_size))
+        
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=hidden_size,
+            nhead=8,
+            dim_feedforward=512,
+            dropout=0.3,
+            batch_first=True,
+            activation='relu'
+        )
+        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        
+        self.fc = nn.Sequential(
+            nn.Linear(hidden_size, 256),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(128, 1)
+        )
+    
+    def forward(self, x):
+        x = self.input_projection(x)
+        x = x + self.positional_encoding[:, :x.shape[1], :]
+        x = self.transformer_encoder(x)
+        x = x[:, -1, :]
+        output = self.fc(x)
+        return output
+
+
+class EnsembleModel(nn.Module):
+    """Advanced ensemble - fusion of 3 models (LSTM + GRU + Transformer)"""
+    def __init__(self, lstm_model, gru_model, transformer_model):
+        super(EnsembleModel, self).__init__()
+        self.lstm_model = lstm_model
+        self.gru_model = gru_model
+        self.transformer_model = transformer_model
+        
+        self.fusion = nn.Sequential(
+            nn.Linear(3, 128),
+            nn.BatchNorm1d(128),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(64, 1)
+        )
+    
+    def forward(self, x):
+        lstm_out = self.lstm_model(x)
+        gru_out = self.gru_model(x)
+        transformer_out = self.transformer_model(x)
+        
+        combined = torch.cat([lstm_out, gru_out, transformer_out], dim=1)
+        output = self.fusion(combined)
+        
+        return output
+
+
+# ===== 交易機器人 =====
+
+class RealtimeTradingBot:
+    """實時交易信號機器人 - 使用融合模型"""
+    
+    def __init__(self, device: str = 'cpu'):
+        self.api_key = os.getenv('BINANCE_API_KEY')
+        self.api_secret = os.getenv('BINANCE_API_SECRET')
+        self.device = torch.device(device)
+        
+        # 初始化 Binance US Client
+        self.client = None
+        try:
+            from binance.client import Client
+            
+            self.client = Client(
+                self.api_key, 
+                self.api_secret,
+                tld='us'
+            )
+            
+            self.client.session.headers.update({
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            })
+            
+            self.client.ping()
+            logger.info("✅ Binance US Client initialized successfully!")
+        
+        except Exception as e:
+            logger.warning(f"⚠️ Binance US failed: {str(e)[:80]}")
+            self.client = None
+        
+        # 初始化 Discord Handler
+        self.discord_handler = DiscordBotHandler()
+        self.discord_thread = threading.Thread(target=self.discord_handler.start, daemon=True)
+        self.discord_thread.start()
+        logger.info("🤖 Discord Bot started in background thread")
         
         # 監控配置
         self.symbols = ['BTC', 'ETH', 'BNB', 'XRP', 'ADA', 'SOL', 'DOGE', 'MATIC', 'AVAX', 'LINK']
-        self.interval = '1h'  # 1小時間間隔
-        self.lookback_period = 60  # 60根K線
-        self.check_frequency = 300  # 5分鐘檢查一次
+        self.interval = '1h'
+        self.lookback_period = 60
+        self.check_frequency = 900  # 15 分鐘
         
-        # 信號歷史（避免重複發送相同信號）
+        # 為每個幣種加載模型
+        self.models = {}
+        self._load_models()
+        
+        # 為每個幣種創建信號生成器
+        self.signal_generators = {}
+        for symbol in self.symbols:
+            model = self.models.get(symbol)
+            self.signal_generators[symbol] = SignalGenerator(model=model, device=device)
+        
+        logger.info("📊 Signal Generators initialized for all symbols with ensemble models")
+        
+        # 信號歷史
         self.signal_history: Dict[str, TradingSignal] = {}
         self.last_signal_time: Dict[str, datetime] = {}
+        
+        logger.info("✅ RealtimeTradingBot initialized")
+        logger.info(f"⏱️  Check frequency: {self.check_frequency // 60} minutes")
     
-    def fetch_klines(
-        self,
-        symbol: str,
-        interval: str = '1h',
-        limit: int = 100
-    ) -> Optional[List]:
-        """
-        從 Binance 獲取 K 線數據
-        """
-        try:
-            # 轉換符號格式 (BTC → BTCUSDT)
-            binance_symbol = f"{symbol}USDT"
+    def _load_models(self):
+        """為每個幣種加載已訓練的融合模型"""
+        model_dir = "models/saved_models"
+        
+        for symbol in self.symbols:
+            model_path = f"{model_dir}/{symbol}_lstm_model.pth"
             
+            try:
+                if os.path.exists(model_path):
+                    # 創建三個子模型
+                    lstm_model = EnhancedLSTMModel(input_size=17, hidden_size=256, num_layers=4)
+                    gru_model = GRUModel(input_size=17, hidden_size=256, num_layers=4)
+                    transformer_model = TransformerEncoderModel(input_size=17, hidden_size=128, num_layers=3)
+                    
+                    # 創建融合模型
+                    ensemble = EnsembleModel(lstm_model, gru_model, transformer_model)
+                    
+                    # 加載 state_dict
+                    state_dict = torch.load(model_path, map_location=self.device)
+                    ensemble.load_state_dict(state_dict)
+                    
+                    # 設為評估模式
+                    ensemble.eval()
+                    ensemble.to(self.device)
+                    
+                    self.models[symbol] = ensemble
+                    logger.info(f"✅ Loaded ensemble model for {symbol}")
+                else:
+                    logger.warning(f"⚠️ Model not found for {symbol}")
+                    self.models[symbol] = None
+            
+            except Exception as e:
+                logger.error(f"❌ Error loading model for {symbol}: {e}")
+                self.models[symbol] = None
+    
+    def fetch_klines_binance_us(self, symbol: str, interval: str = '1h', limit: int = 100) -> Optional[List]:
+        """從 Binance US 獲取 K 線數據"""
+        try:
+            if not self.client:
+                return None
+            
+            binance_symbol = f"{symbol}USDT"
             klines = self.client.get_klines(
                 symbol=binance_symbol,
                 interval=interval,
                 limit=limit
             )
-            
             return klines
-        
-        except BinanceAPIException as e:
-            logger.error(f"Binance API error for {symbol}: {e}")
-            return None
         except Exception as e:
-            logger.error(f"Error fetching klines for {symbol}: {e}")
+            logger.warning(f"Binance US fetch failed for {symbol}: {str(e)[:80]}")
             return None
     
-    def parse_klines(
-        self,
-        klines: List
-    ) -> tuple:
-        """
-        解析 K 線數據為價格和成交量數組
-        """
-        if not klines:
-            return None, None
+    def fetch_klines_from_coingecko(self, symbol: str, days: int = 60) -> Optional[List]:
+        """使用 CoinGecko 作為備用"""
+        try:
+            coingecko_id = {
+                'BTC': 'bitcoin',
+                'ETH': 'ethereum',
+                'BNB': 'binancecoin',
+                'XRP': 'ripple',
+                'ADA': 'cardano',
+                'SOL': 'solana',
+                'DOGE': 'dogecoin',
+                'MATIC': 'matic-network',
+                'AVAX': 'avalanche-2',
+                'LINK': 'chainlink'
+            }.get(symbol, symbol.lower())
+            
+            url = f"https://api.coingecko.com/api/v3/coins/{coingecko_id}/market_chart"
+            params = {
+                'vs_currency': 'usd',
+                'days': days,
+                'interval': 'daily'
+            }
+            
+            response = requests.get(url, params=params, timeout=10)
+            response.raise_for_status()
+            
+            data = response.json()
+            return data.get('prices', [])
         
-        prices = np.array([float(k[4]) for k in klines])  # 收盤價
-        volumes = np.array([float(k[7]) for k in klines])  # 成交量
-        
-        return prices, volumes
+        except Exception as e:
+            logger.error(f"CoinGecko error for {symbol}: {str(e)[:80]}")
+            return None
     
-    async def process_symbol(
-        self,
-        symbol: str
-    ) -> Optional[TradingSignal]:
-        """
-        處理單個交易對
-        """
-        logger.info(f"Processing {symbol}...")
+    def parse_klines_to_prices(self, klines: List) -> np.ndarray:
+        """解析 K 線數據為價格數組"""
+        if isinstance(klines[0], (list, tuple)):
+            prices = np.array([float(k[4]) for k in klines])
+        else:
+            prices = np.array([float(k[1]) for k in klines])
         
+        return prices
+    
+    async def process_symbol(self, symbol: str) -> Optional[TradingSignal]:
+        """處理單個交易對並生成交易信號"""
         try:
             # 獲取 K 線數據
-            klines = self.fetch_klines(
-                symbol=symbol,
-                interval=self.interval,
-                limit=self.lookback_period
-            )
+            klines = self.fetch_klines_binance_us(symbol)
             
             if not klines:
-                logger.warning(f"No klines data for {symbol}")
+                prices = self.fetch_klines_from_coingecko(symbol)
+                if not prices:
+                    logger.warning(f"❌ Could not fetch data for {symbol}")
+                    return None
+                data_source = "CoinGecko"
+            else:
+                prices = self.parse_klines_to_prices(klines)
+                data_source = "Binance US"
+            
+            logger.info(f"✅ Processing {symbol}USDT ({data_source}) - {len(prices)} data points")
+            
+            if len(prices) < self.lookback_period:
+                logger.warning(f"⚠️ {symbol}: Insufficient data")
                 return None
             
-            # 解析數據
-            prices, volumes = self.parse_klines(klines)
-            if prices is None:
-                return None
+            current_price = float(prices[-1])
             
-            current_price = prices[-1]
+            # 使用對應幣種的信號生成器（帶有模型）
+            signal_gen = self.signal_generators.get(symbol)
             
-            # 生成信號
-            signal = self.signal_generator.generate_signal(
+            signal = signal_gen.generate_signal(
                 symbol=symbol,
                 current_price=current_price,
-                price_history=prices,
-                volume_history=volumes
+                price_history=prices
             )
             
-            if signal is None:
-                return None
-            
-            # 檢查是否應該發送通知（避免重複）
-            should_notify = self._should_notify(symbol, signal)
-            
-            if should_notify:
-                # 發送通知（只有 Discord）
-                await self._send_discord_signal(signal)
+            if signal:
+                logger.info(f"📈 Signal generated for {symbol}: {signal.signal_type.value} (Confidence: {signal.confidence:.2%})")
                 
-                # 更新歷史
-                self.signal_history[symbol] = signal
-                self.last_signal_time[symbol] = datetime.now()
-            
-            return signal
+                if self._should_send_signal(symbol, signal):
+                    await self._send_signal_notification(symbol, signal)
+                    self.signal_history[symbol] = signal
+                    self.last_signal_time[symbol] = datetime.now()
+                
+                return signal
+            else:
+                logger.info(f"⚪ No strong signal for {symbol}")
+                return None
         
         except Exception as e:
             logger.error(f"Error processing {symbol}: {e}")
             return None
     
-    def _should_notify(self, symbol: str, signal: TradingSignal) -> bool:
-        """
-        判斷是否應該發送通知
+    def _should_send_signal(self, symbol: str, signal: TradingSignal) -> bool:
+        """判斷是否應該發送信號通知"""
+        if symbol in self.last_signal_time:
+            time_since_last = datetime.now() - self.last_signal_time[symbol]
+            if time_since_last.total_seconds() < 3600:
+                return False
         
-        規則:
-        1. 信號類型改變
-        2. 信心度大幅提升 (> 0.1)
-        3. 距離上次信號超過 1 小時
-        """
-        # 第一次信號
-        if symbol not in self.signal_history:
-            return True
+        if signal.confidence < 0.50:
+            return False
         
-        last_signal = self.signal_history[symbol]
-        last_time = self.last_signal_time.get(symbol)
-        
-        # 信號類型改變
-        if signal.signal_type != last_signal.signal_type:
-            return True
-        
-        # 信心度大幅提升
-        if signal.confidence - last_signal.confidence > 0.15:
-            return True
-        
-        # 距離上次信號超過 1 小時
-        if last_time and (datetime.now() - last_time).total_seconds() > 3600:
-            return True
-        
-        return False
+        return True
     
-    async def _send_discord_signal(self, signal: TradingSignal):
-        """
-        發送 Discord 交易信號
-        """
+    async def _send_signal_notification(self, symbol: str, signal: TradingSignal):
+        """通過 Discord 發送信號通知"""
         try:
-            # 根據信號類型選擇顏色
-            from src.signal_generator import SignalType
-            if signal.signal_type in [SignalType.STRONG_BUY, SignalType.BUY]:
-                color = 3066993  # Green
-            elif signal.signal_type in [SignalType.STRONG_SELL, SignalType.SELL]:
-                color = 15158332  # Red
+            import discord
+            
+            if "BUY" in signal.signal_type.value:
+                color = discord.Color.green()
+            elif "SELL" in signal.signal_type.value:
+                color = discord.Color.red()
             else:
-                color = 12370112  # Gray
+                color = discord.Color.yellow()
             
-            # 構建嵌入
-            embed = {
-                'title': f"{signal.signal_type.value}",
-                'description': f"🎯 Trading Signal Generated for {signal.symbol}",
-                'color': color,
-                'fields': [
-                    {'name': 'Symbol', 'value': signal.symbol, 'inline': True},
-                    {'name': 'Signal', 'value': signal.signal_type.value, 'inline': True},
-                    {'name': 'Confidence', 'value': f"{signal.confidence*100:.1f}%", 'inline': True},
-                    {'name': 'Current Price', 'value': f"${signal.current_price:.2f}", 'inline': True},
-                    {'name': 'Entry Price', 'value': f"${signal.entry_price:.2f}", 'inline': True},
-                    {'name': 'Take Profit', 'value': f"${signal.take_profit:.2f}", 'inline': True},
-                    {'name': 'Stop Loss', 'value': f"${signal.stop_loss:.2f}", 'inline': True},
-                    {'name': 'Risk/Reward', 'value': f"{signal.risk_reward_ratio:.2f}", 'inline': True},
-                    {'name': 'Trend', 'value': signal.trend_direction.value, 'inline': True},
-                    {'name': 'Trend Strength', 'value': f"{signal.trend_strength*100:.1f}%", 'inline': True},
-                    {'name': 'Predicted Next Price', 'value': f"${signal.predicted_next_price:.2f}", 'inline': True},
-                    {'name': 'Predicted Volatility', 'value': f"{signal.predicted_volatility*100:.2f}%", 'inline': True},
-                    {'name': 'Momentum', 'value': f"{signal.momentum_score:.2f}", 'inline': True},
-                    {'name': 'Sentiment', 'value': f"{signal.sentiment_score:.2f}", 'inline': True},
-                    {'name': 'Breakout', 'value': "✅ Yes" if signal.is_breakout else "❌ No", 'inline': True},
-                    {'name': 'RSI', 'value': f"{signal.technical_indicators.get('rsi', 0):.1f}", 'inline': True},
-                ],
-                'timestamp': signal.timestamp.isoformat()
-            }
+            embed = discord.Embed(
+                title=f"{signal.signal_type.value}",
+                description=f"**{symbol}USDT** 交易信號",
+                color=color,
+                timestamp=datetime.now()
+            )
             
-            cog = self.discord_handler.bot.get_cog('TrainingNotificationCog')
-            if cog:
-                await cog.send_status_update(
-                    title=f"🎯 {signal.symbol} Trading Signal",
-                    description=signal.signal_type.value,
-                    fields={
-                        'Entry': f"${signal.entry_price:.2f}",
-                        'TP': f"${signal.take_profit:.2f}",
-                        'SL': f"${signal.stop_loss:.2f}",
-                        'R/R': f"{signal.risk_reward_ratio:.2f}",
-                        'Confidence': f"{signal.confidence*100:.1f}%",
-                        'Trend': signal.trend_direction.value
-                    }
-                )
+            embed.add_field(name="💰 當前價格", value=f"${signal.current_price:,.2f}", inline=True)
+            embed.add_field(name="🎯 進場價", value=f"${signal.entry_price:,.2f}", inline=True)
+            embed.add_field(name="📊 信心度", value=f"{signal.confidence:.2%}", inline=True)
             
-            logger.info(f"Discord signal sent for {signal.symbol}")
+            embed.add_field(name="✅ 獲利目標", value=f"${signal.take_profit:,.2f}", inline=True)
+            embed.add_field(name="❌ 止損點", value=f"${signal.stop_loss:,.2f}", inline=True)
+            embed.add_field(name="⚖️ 風險回報比", value=f"{signal.risk_reward_ratio:.2f}", inline=True)
+            
+            embed.add_field(name="📈 趨勢", value=signal.trend_direction.value, inline=True)
+            embed.add_field(name="💪 趨勢強度", value=f"{signal.trend_strength:.2%}", inline=True)
+            embed.add_field(name="🔥 是否突破", value="✅ 是" if signal.is_breakout else "❌ 否", inline=True)
+            
+            embed.add_field(name="⚠️ 免責聲明", value="此信號僅供參考，請自行評估風險後決定交易。", inline=False)
+            
+            embed.set_footer(text="Crypto Price Predictor Bot")
+            
+            channel = self.discord_handler.bot.get_channel(int(os.getenv('DISCORD_CHANNEL_ID', '0')))
+            if channel:
+                await channel.send(embed=embed)
+                logger.info(f"✅ Signal notification sent to Discord for {symbol}")
         
         except Exception as e:
-            logger.error(f"Error sending Discord signal: {e}")
+            logger.error(f"Error sending signal notification: {e}")
     
     async def run_monitoring_loop(self):
-        """
-        運行持續監控循環
-        """
-        logger.info("Starting real-time trading bot monitoring...")
+        """運行持續監控循環"""
+        logger.info("🚀 Starting real-time trading bot monitoring...")
         logger.info("📢 Discord Bot 通知已啓用")
-        logger.info("❌ Email 通知已禁用")
-        logger.info("❌ Telegram 通知已禁用")
+        logger.info(f"⏱️  檢查頻率: 每 15 分鐘一次")
+        
+        await asyncio.sleep(2)
         
         while True:
             try:
@@ -248,30 +483,41 @@ class RealtimeTradingBot:
                 logger.info(f"Scanning {len(self.symbols)} symbols at {datetime.now()}")
                 logger.info(f"{'='*70}")
                 
-                # 處理所有交易對
                 tasks = [self.process_symbol(symbol) for symbol in self.symbols]
                 results = await asyncio.gather(*tasks)
                 
-                # 記錄生成的信號
                 signals_generated = sum(1 for r in results if r is not None)
-                logger.info(f"Generated {signals_generated} signals in this cycle")
+                strong_signals = sum(1 for r in results if r and r.confidence > 0.75)
                 
-                # 等待下一個檢查週期
-                logger.info(f"Next check in {self.check_frequency} seconds...")
+                logger.info(f"📊 Generated {signals_generated} signals ({strong_signals} strong signals)")
+                logger.info(f"⏰ Next check in {self.check_frequency // 60} minutes...")
+                
                 await asyncio.sleep(self.check_frequency)
             
             except KeyboardInterrupt:
-                logger.info("Monitoring stopped by user")
+                logger.info("⛔ Monitoring stopped by user")
                 break
             except Exception as e:
                 logger.error(f"Error in monitoring loop: {e}")
-                await asyncio.sleep(60)  # 出錯後等 1 分鐘再重試
+                await asyncio.sleep(60)
     
     def start(self):
-        """
-        啟動機器人
-        """
+        """啟動機器人"""
         try:
             asyncio.run(self.run_monitoring_loop())
         except Exception as e:
             logger.error(f"Fatal error: {e}")
+
+
+if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    
+    logger.info("="*70)
+    logger.info("🤖 Crypto Price Predictor - Realtime Trading Bot")
+    logger.info("="*70)
+    
+    bot = RealtimeTradingBot(device='cpu')
+    bot.start()
