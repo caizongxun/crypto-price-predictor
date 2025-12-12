@@ -3,7 +3,7 @@ import pandas as pd
 import torch
 import logging
 from datetime import datetime
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple, Optional, List
 from dataclasses import dataclass
 from enum import Enum
 
@@ -35,7 +35,7 @@ class TradingSignal:
     confidence: float
     trend_direction: TrendDirection
     trend_strength: float
-    predicted_next_price: float
+    predicted_prices: List[float] # Changed from predicted_next_price to list
     predicted_volatility: float
     momentum_score: float
     sentiment_score: float
@@ -48,6 +48,7 @@ class SignalGenerator:
         self.model = model
         self.device = torch.device(device)
         self.lookback_period = 60
+        self.prediction_steps = 5 # Predict 5 steps ahead
         self.min_confidence_threshold = 0.6
     
     def prepare_features(self, prices: np.ndarray) -> Optional[np.ndarray]:
@@ -122,8 +123,6 @@ class SignalGenerator:
                 logger.warning(f"Invalid values in features, cleaning...")
                 features = np.nan_to_num(features, nan=0.0, posinf=1.0, neginf=0.0)
             
-            logger.debug(f"✅ Features shape: {features.shape}, Last row non-zero: {np.any(features[-1] != 0)}")
-            
             # 正規化
             from sklearn.preprocessing import MinMaxScaler
             scaler = MinMaxScaler(feature_range=(0, 1))
@@ -135,10 +134,10 @@ class SignalGenerator:
             logger.error(f"❌ Error preparing features: {e}", exc_info=True)
             return None
     
-    def predict_next_price_and_volatility(self, prices: np.ndarray, symbol: str, current_price: float) -> Tuple[float, float]:
+    def predict_next_prices(self, prices: np.ndarray, symbol: str, current_price: float) -> Tuple[List[float], float]:
+        """Predict next 5 prices and calculate volatility"""
         try:
             prices = np.array(prices, dtype=float).flatten()
-            logger.info(f"🤖 [Model Prediction] {symbol}: Input {len(prices)} prices, Current: ${current_price:.2f}")
             
             # 準備 17 個特徵
             features = self.prepare_features(prices)
@@ -152,49 +151,49 @@ class SignalGenerator:
             X = features[-self.lookback_period:]
             X = X.reshape(1, X.shape[0], X.shape[1])  # (1, 60, 17)
             
-            logger.debug(f"X shape for model: {X.shape}, Sample values: {X[0, 0, :3]}")
-            
             X_tensor = torch.tensor(X, dtype=torch.float32).to(self.device)
             
             was_training = self.model.training
             self.model.eval()
             
             with torch.no_grad():
-                price_prediction = self.model(X_tensor)
-                predicted_price_normalized = price_prediction.cpu().numpy()[0][0]
+                # Model output shape is now (1, 5)
+                price_predictions_normalized = self.model(X_tensor).cpu().numpy()[0]
             
             if was_training:
                 self.model.train()
             
             # 反正規化：將正規化的價格轉換回真實價格
-            # 模型訓練時正規化了 close 價格，所以我們需要反正規化
             price_min = np.min(prices)
             price_max = np.max(prices)
-            predicted_price = price_min + predicted_price_normalized * (price_max - price_min)
             
-            # 如果預測價格超出範圍，截斷到有效範圍
-            predicted_price = np.clip(predicted_price, price_min * 0.8, price_max * 1.2)
+            predicted_prices = []
+            for pred_norm in price_predictions_normalized:
+                pred_price = price_min + pred_norm * (price_max - price_min)
+                # 簡單的範圍保護
+                pred_price = np.clip(pred_price, price_min * 0.8, price_max * 1.2)
+                predicted_prices.append(float(pred_price))
             
             # 計算波動率
             price_returns = np.diff(prices) / (prices[:-1] + 1e-8)
             predicted_volatility = float(np.std(price_returns) * np.sqrt(252))
             
-            # 計算價格變化百分比
-            price_change_pct = (predicted_price - current_price) / (current_price + 1e-8) * 100
+            # Log result (showing last prediction)
+            last_pred = predicted_prices[-1]
+            change_pct = (last_pred - current_price) / (current_price + 1e-8) * 100
+            logger.info(f"✅ Prediction for {symbol}: 5 steps, Final: ${last_pred:.2f} ({change_pct:+.2f}%)")
             
-            logger.info(f"✅ Model prediction for {symbol}: ${predicted_price:.2f} | Change: {price_change_pct:+.2f}% (normalized: {predicted_price_normalized:.4f}, vol: {predicted_volatility:.4f})")
-            return float(predicted_price), float(predicted_volatility)
+            return predicted_prices, predicted_volatility
         
         except Exception as e:
             logger.warning(f"⚠️ Model prediction failed for {symbol}: {str(e)[:100]}")
+            # Fallback: linear projection
             try:
-                prices = np.array(prices, dtype=float).flatten()
-                price_returns = np.diff(prices) / (prices[:-1] + 1e-8)
-                volatility = float(np.std(price_returns) * np.sqrt(252))
-                logger.info(f"↩️ Fallback for {symbol}: current_price=${current_price:.2f}")
+                trend = (prices[-1] - prices[-5]) / 5
+                fallback_prices = [current_price + trend * i for i in range(1, 6)]
+                return fallback_prices, 0.02
             except:
-                volatility = 0.02
-            return current_price, volatility
+                return [current_price] * 5, 0.02
     
     def calculate_technical_indicators(self, prices: np.ndarray) -> Dict:
         indicators = {}
@@ -277,18 +276,20 @@ class SignalGenerator:
             if len(price_history) < self.lookback_period:
                 return None
             
+            predicted_prices = []
             if self.model is not None:
                 try:
-                    predicted_price, predicted_volatility = self.predict_next_price_and_volatility(price_history[-self.lookback_period:], symbol, current_price)
+                    predicted_prices, predicted_volatility = self.predict_next_prices(price_history[-self.lookback_period:], symbol, current_price)
                 except Exception as e:
                     logger.warning(f"Model prediction error for {symbol}: {e}")
-                    predicted_price = float(current_price)
-                    price_returns = np.diff(price_history) / (price_history[:-1] + 1e-8)
-                    predicted_volatility = float(np.std(price_returns) * np.sqrt(252))
+                    predicted_prices = [float(current_price)] * 5
+                    predicted_volatility = 0.02
             else:
-                predicted_price = float(current_price)
-                price_returns = np.diff(price_history) / (price_history[:-1] + 1e-8)
-                predicted_volatility = float(np.std(price_returns) * np.sqrt(252))
+                predicted_prices = [float(current_price)] * 5
+                predicted_volatility = 0.02
+            
+            # Get the final predicted price (5th step) for main logic
+            final_predicted_price = predicted_prices[-1]
             
             technical_indicators = self.calculate_technical_indicators(price_history)
             support, resistance = self.identify_support_resistance(price_history)
@@ -297,8 +298,8 @@ class SignalGenerator:
             is_breakout = self.detect_breakout(price_history, current_price)
             rsi = technical_indicators.get('rsi', 50.0)
             
-            signal_type, confidence = self._generate_signal_type(current_price, predicted_price, rsi, momentum_score, trend_strength, trend_direction, is_breakout, technical_indicators)
-            entry_price, take_profit, stop_loss = self._calculate_entry_exit_points(current_price, predicted_price, support, resistance, trend_direction, signal_type, predicted_volatility)
+            signal_type, confidence = self._generate_signal_type(current_price, final_predicted_price, rsi, momentum_score, trend_strength, trend_direction, is_breakout, technical_indicators)
+            entry_price, take_profit, stop_loss = self._calculate_entry_exit_points(current_price, final_predicted_price, support, resistance, trend_direction, signal_type, predicted_volatility)
             
             if signal_type in [SignalType.STRONG_BUY, SignalType.BUY]:
                 risk = entry_price - stop_loss
@@ -313,7 +314,7 @@ class SignalGenerator:
             risk_reward_ratio = float(reward / (risk + 1e-8) if risk != 0 else 0)
             sentiment_score = float(momentum_score * 0.3 + (trend_strength if trend_direction in [TrendDirection.STRONG_UPTREND, TrendDirection.UPTREND] else -trend_strength) * 0.4 + (1 if is_breakout else 0) * 0.3)
             
-            return TradingSignal(symbol=symbol, timestamp=datetime.now(), signal_type=signal_type, current_price=float(current_price), entry_price=float(entry_price), take_profit=float(take_profit), stop_loss=float(stop_loss), confidence=float(confidence), trend_direction=trend_direction, trend_strength=float(trend_strength), predicted_next_price=float(predicted_price), predicted_volatility=float(predicted_volatility), momentum_score=float(momentum_score), sentiment_score=float(sentiment_score), risk_reward_ratio=float(risk_reward_ratio), is_breakout=bool(is_breakout), technical_indicators=technical_indicators)
+            return TradingSignal(symbol=symbol, timestamp=datetime.now(), signal_type=signal_type, current_price=float(current_price), entry_price=float(entry_price), take_profit=float(take_profit), stop_loss=float(stop_loss), confidence=float(confidence), trend_direction=trend_direction, trend_strength=float(trend_strength), predicted_prices=predicted_prices, predicted_volatility=float(predicted_volatility), momentum_score=float(momentum_score), sentiment_score=float(sentiment_score), risk_reward_ratio=float(risk_reward_ratio), is_breakout=bool(is_breakout), technical_indicators=technical_indicators)
         except Exception as e:
             logger.error(f"Error generating signal for {symbol}: {e}", exc_info=True)
             return None
@@ -322,25 +323,19 @@ class SignalGenerator:
         confidence = 0.5
         signals = []
         
-        # 模型預測是最重要的 - 菜鳥模型中心
+        # 模型預測是最重要的
         if current_price > 0:
             price_change = (predicted_price - current_price) / (current_price + 1e-8)
-            # 增加模型預測的權重 (訓練好的模型已經騎鑑了)
             model_signal = 1.0 if price_change > 0.005 else (-1.0 if price_change < -0.005 else 0.0)
             signals.append(model_signal)
-            # 模型預測有推估信心增加
             if abs(price_change) > 0.005:
-                confidence += 0.25  # 大幅度增加 (from 0.1)
-            logger.debug(f"Model signal: {model_signal:.2f}, price_change: {price_change*100:.2f}%, confidence boost: +0.25")
+                confidence += 0.25
         
-        # RSI 信號 - 超買/超賣區間
-        # BUY: RSI < 30 (超賣)
-        # SELL: RSI > 70 (超買)
+        # RSI 信號
         rsi_signal = 1.0 if rsi < 30 else (-1.0 if rsi > 70 else 0.0)
         signals.append(rsi_signal)
         if rsi < 30 or rsi > 70:
             confidence += 0.10
-            logger.debug(f"RSI signal: {rsi_signal:.2f} (RSI={rsi:.1f})")
         
         # Momentum 信號
         signals.append(momentum_score)
@@ -350,66 +345,36 @@ class SignalGenerator:
         trend_signal = (trend_strength if trend_direction in [TrendDirection.STRONG_UPTREND, TrendDirection.UPTREND] else (-trend_strength if trend_direction in [TrendDirection.STRONG_DOWNTREND, TrendDirection.DOWNTREND] else 0.0))
         signals.append(trend_signal)
         confidence += abs(trend_signal) * 0.10
-        logger.debug(f"Trend signal: {trend_signal:.2f}, direction: {trend_direction.value}")
         
         # Breakout 信號
         if is_breakout:
             breakout_signal = 1.0 if trend_direction in [TrendDirection.UPTREND, TrendDirection.STRONG_UPTREND] else -1.0
             signals.append(breakout_signal)
             confidence += 0.15
-            logger.debug(f"Breakout signal: {breakout_signal:.2f}")
         
         overall_signal = float(np.mean(signals)) if signals else 0.0
         confidence = float(min(confidence, 0.95))
         
-        logger.debug(f"Overall signal: {overall_signal:.2f}, confidence: {confidence:.2%}, signals: {[f'{s:.2f}' for s in signals]}")
-        
-        # BUY 信號邏輯 (positive signal)
         if overall_signal > 0.3:
             return (SignalType.STRONG_BUY, confidence) if confidence > 0.75 else (SignalType.BUY, confidence)
-        # SELL 信號邏輯 (negative signal) - 對稱的邏輯
         elif overall_signal < -0.3:
             return (SignalType.STRONG_SELL, confidence) if confidence > 0.75 else (SignalType.SELL, confidence)
         return SignalType.NEUTRAL, 0.5
     
     def _calculate_entry_exit_points(self, current_price: float, predicted_price: float, support: float, resistance: float, trend_direction: TrendDirection, signal_type: SignalType, predicted_volatility: float) -> Tuple[float, float, float]:
-        """
-        計算進場、獲利、止損點
-        
-        對於 BUY:
-            - Entry: 接近 current_price 或 support
-            - TP: 高於 current_price（向上）
-            - SL: 低於 current_price（向下保護）
-        
-        對於 SELL:
-            - Entry: 接近 current_price 或 resistance
-            - TP: 低於 current_price（向下）
-            - SL: 高於 current_price（向上保護）
-        """
         volatility_factor = max(float(predicted_volatility), 0.01)
         
         if signal_type in [SignalType.STRONG_BUY, SignalType.BUY]:
-            # 買入信號
-            entry_price = float(current_price)  # 使用當前價格作為進場點
-            # TP: 向上 (使用預測價格或 resistance)
-            take_profit = float(max(predicted_price, resistance))
-            # SL: 向下 (使用 support)
-            stop_loss = float(support)
-            
-        elif signal_type in [SignalType.STRONG_SELL, SignalType.SELL]:
-            # 賣出信號
-            entry_price = float(current_price)  # 使用當前價格作為進場點
-            # TP: 向下 (使用預測價格或 support)
-            take_profit = float(min(predicted_price, support))
-            # SL: 向上 (使用 resistance)
-            stop_loss = float(resistance)
-            
-        else:
-            # NEUTRAL - 使用保守的設置
             entry_price = float(current_price)
-            # TP 和 SL 基於波動率
+            take_profit = float(max(predicted_price, resistance))
+            stop_loss = float(support)
+        elif signal_type in [SignalType.STRONG_SELL, SignalType.SELL]:
+            entry_price = float(current_price)
+            take_profit = float(min(predicted_price, support))
+            stop_loss = float(resistance)
+        else:
+            entry_price = float(current_price)
             take_profit = float(current_price * (1 + volatility_factor))
             stop_loss = float(current_price * (1 - volatility_factor))
         
-        logger.debug(f"Entry: ${entry_price:.2f}, TP: ${take_profit:.2f}, SL: ${stop_loss:.2f}")
         return entry_price, take_profit, stop_loss
