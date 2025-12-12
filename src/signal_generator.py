@@ -98,10 +98,22 @@ class SignalGenerator:
         
         except Exception as e:
             logger.warning(f"Model prediction failed for {symbol}: {e}")
-            # 返回當前價格作為備用預測
-            current_price = float(X[0, -1, 0])
-            price_returns = np.diff(X[0, :, 0]) / X[0, :-1, 0]
-            volatility = float(np.std(price_returns) * np.sqrt(252)) if len(price_returns) > 0 else 0.01
+            # 使用當前價格作為預測
+            if isinstance(X, np.ndarray) and len(X.shape) >= 2:
+                current_price = float(X[0, -1, 0] if len(X.shape) == 3 else X[-1, 0])
+            else:
+                current_price = float(X[-1])
+            
+            # 計算波動率
+            try:
+                if isinstance(X, np.ndarray):
+                    prices = X[0, :, 0] if len(X.shape) == 3 else X[:, 0] if len(X.shape) == 2 else X
+                    price_returns = np.diff(prices) / prices[:-1]
+                    volatility = float(np.std(price_returns) * np.sqrt(252))
+                else:
+                    volatility = 0.02
+            except:
+                volatility = 0.02
             
             return current_price, volatility
     
@@ -311,9 +323,10 @@ class SignalGenerator:
                     symbol
                 )
             else:
-                # 如果沒有模型，使用簡單預測
+                # 如果沒有模型，使用當前價格作為預測
                 predicted_price = current_price
-                predicted_volatility = np.std(np.diff(price_history) / price_history[:-1])
+                price_returns = np.diff(price_history) / price_history[:-1]
+                predicted_volatility = float(np.std(price_returns) * np.sqrt(252))
             
             # 計算技術指標
             technical_indicators = self.calculate_technical_indicators(price_history)
