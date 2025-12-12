@@ -14,6 +14,8 @@ import torch.nn as nn
 
 from src.signal_generator import SignalGenerator, TradingSignal
 from src.discord_bot_handler import DiscordBotHandler
+from src.gemini_signal_validator import GeminiSignalValidator
+from src.multi_timeframe_analyzer import MultiTimeframeAnalyzer
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -210,12 +212,24 @@ class EnsembleModel(nn.Module):
 # ===== 交易機器人 =====
 
 class RealtimeTradingBot:
-    """實時交易信號機器人 - 使用融合模型"""
+    """實時交易信號機器人 - 使用融合模型與 Gemini 驗證"""
     
     def __init__(self, device: str = 'cpu'):
         self.api_key = os.getenv('BINANCE_API_KEY')
         self.api_secret = os.getenv('BINANCE_API_SECRET')
+        self.gemini_api_key = os.getenv('GEMINI_API_KEY')
         self.device = torch.device(device)
+        
+        # 初始化 Gemini 驗證器
+        if self.gemini_api_key:
+            self.gemini_validator = GeminiSignalValidator(self.gemini_api_key)
+            logger.info("✅ Gemini 驗證器已啟用")
+        else:
+            self.gemini_validator = None
+            logger.warning("⚠️ 未設置 GEMINI_API_KEY，AI 驗證功能將停用")
+            
+        # 初始化多時間框架分析器
+        self.mtf_analyzer = MultiTimeframeAnalyzer()
         
         # 初始化 Binance US Client
         self.client = None
@@ -287,11 +301,11 @@ class RealtimeTradingBot:
                     
                     # 檢查 state_dict 的結構
                     first_key = list(state_dict.keys())[0]
-                    logger.info(f"First key in state_dict: {first_key}")
+                    # logger.info(f"First key in state_dict: {first_key}")
                     
                     # 判斷是否是包裝的 ensemble 模型
                     if first_key.startswith('lstm_model.'):
-                        logger.info(f"Detected wrapped ensemble model for {symbol}")
+                        # logger.info(f"Detected wrapped ensemble model for {symbol}")
                         
                         # 直接創建並加載 ensemble
                         lstm_model = EnhancedLSTMModel(input_size=17, hidden_size=256, num_layers=4)
@@ -376,11 +390,18 @@ class RealtimeTradingBot:
         
         return prices
     
-    def _send_signal_notification_sync(self, symbol: str, signal: TradingSignal):
-        """通過 Discord 發送信號通知 (同步版本)"""
+    def _send_signal_notification_sync(self, symbol: str, signal: TradingSignal, gemini_analysis=None):
+        """通過 Discord 發送信號通知 (同步版本，支持 Gemini 分析結果)"""
         try:
             import discord
             
+            # 使用 Gemini 驗證後的信心度
+            final_confidence = signal.confidence
+            if gemini_analysis:
+                final_confidence += (gemini_analysis.confidence_adjustment / 100)
+                final_confidence = max(0.0, min(1.0, final_confidence))
+            
+            # 判斷顏色
             if "BUY" in signal.signal_type.value:
                 color = discord.Color.green()
             elif "SELL" in signal.signal_type.value:
@@ -396,20 +417,35 @@ class RealtimeTradingBot:
             )
             
             embed.add_field(name="💰 當前價格", value=f"${signal.current_price:,.2f}", inline=True)
-            embed.add_field(name="🎯 進場價", value=f"${signal.entry_price:,.2f}", inline=True)
-            embed.add_field(name="📊 信心度", value=f"{signal.confidence:.2%}", inline=True)
             
-            embed.add_field(name="✅ 獲利目標", value=f"${signal.take_profit:,.2f}", inline=True)
-            embed.add_field(name="❌ 止損點", value=f"${signal.stop_loss:,.2f}", inline=True)
-            embed.add_field(name="⚖️ 風險回報比", value=f"{signal.risk_reward_ratio:.2f}", inline=True)
+            if gemini_analysis and gemini_analysis.entry_price:
+                embed.add_field(name="🎯 建議進場", value=f"${gemini_analysis.entry_price:,.2f}", inline=True)
+                embed.add_field(name="📊 修正信心度", value=f"{final_confidence:.2%} ({gemini_analysis.confidence_adjustment:+.0f}%)", inline=True)
+            else:
+                embed.add_field(name="🎯 進場價", value=f"${signal.entry_price:,.2f}", inline=True)
+                embed.add_field(name="📊 信心度", value=f"{signal.confidence:.2%}", inline=True)
+            
+            if gemini_analysis and gemini_analysis.take_profit:
+                embed.add_field(name="✅ 建議止盈", value=f"${gemini_analysis.take_profit:,.2f}", inline=True)
+                embed.add_field(name="❌ 建議止損", value=f"${gemini_analysis.stop_loss:,.2f}", inline=True)
+                if gemini_analysis.risk_reward_ratio:
+                    embed.add_field(name="⚖️ 風險回報比", value=f"{gemini_analysis.risk_reward_ratio:.2f}", inline=True)
+            else:
+                embed.add_field(name="✅ 獲利目標", value=f"${signal.take_profit:,.2f}", inline=True)
+                embed.add_field(name="❌ 止損點", value=f"${signal.stop_loss:,.2f}", inline=True)
+                embed.add_field(name="⚖️ 風險回報比", value=f"{signal.risk_reward_ratio:.2f}", inline=True)
             
             embed.add_field(name="📈 趨勢", value=signal.trend_direction.value, inline=True)
             embed.add_field(name="💪 趨勢強度", value=f"{signal.trend_strength:.2%}", inline=True)
-            embed.add_field(name="🔥 是否突破", value="✅ 是" if signal.is_breakout else "❌ 否", inline=True)
             
-            embed.add_field(name="⚠️ 免責聲明", value="此信號僅供參考，請自行評估風險後決定交易。", inline=False)
+            if gemini_analysis:
+                embed.add_field(name="🤖 AI 驗證", value=f"有效性: {gemini_analysis.validity_score:.0f}%\n市場: {gemini_analysis.market_condition}", inline=True)
+                embed.add_field(name="💡 AI 分析", value=gemini_analysis.reasoning[:200] + "..." if len(gemini_analysis.reasoning) > 200 else gemini_analysis.reasoning, inline=False)
+            else:
+                embed.add_field(name="🔥 是否突破", value="✅ 是" if signal.is_breakout else "❌ 否", inline=True)
+                embed.add_field(name="⚠️ 免責聲明", value="此信號僅供參考，請自行評估風險後決定交易。", inline=False)
             
-            embed.set_footer(text="Crypto Price Predictor Bot")
+            embed.set_footer(text="Crypto Price Predictor Bot • Powered by Gemini AI")
             
             # 使用 discord_handler 的隊列發送，不直接使用 async/await
             self.discord_handler.queue_embed(embed)
@@ -421,40 +457,53 @@ class RealtimeTradingBot:
     def process_symbol(self, symbol: str) -> Optional[TradingSignal]:
         """處理單個交易對並生成交易信號"""
         try:
-            # 獲取 K 線數據
-            klines = self.fetch_klines_binance_us(symbol)
+            # 1. 獲取多時間框架數據 (1h, 4h, 1d)
+            klines_1h = self.fetch_klines_binance_us(symbol, '1h', 100)
+            klines_4h = self.fetch_klines_binance_us(symbol, '4h', 100)
+            klines_1d = self.fetch_klines_binance_us(symbol, '1d', 60)
             
-            if not klines:
-                prices = self.fetch_klines_from_coingecko(symbol)
-                if not prices:
-                    logger.warning(f"❌ Could not fetch data for {symbol}")
-                    return None
-                data_source = "CoinGecko"
-            else:
-                prices = self.parse_klines_to_prices(klines)
-                data_source = "Binance US"
-            
-            logger.info(f"✅ Processing {symbol}USDT ({data_source}) - {len(prices)} data points")
-            
-            if len(prices) < self.lookback_period:
-                logger.warning(f"⚠️ {symbol}: Insufficient data")
+            if not klines_1h:
+                logger.warning(f"❌ Could not fetch data for {symbol}")
                 return None
+                
+            prices_1h = self.parse_klines_to_prices(klines_1h)
+            prices_4h = self.parse_klines_to_prices(klines_4h) if klines_4h else prices_1h
+            prices_1d = self.parse_klines_to_prices(klines_1d) if klines_1d else prices_1h
             
-            current_price = float(prices[-1])
+            current_price = float(prices_1h[-1])
+            logger.info(f"✅ Processing {symbol}USDT - {len(prices_1h)} data points")
             
-            # 使用對應幣種的信號生成器（帶有模型）
+            # 2. 多時間框架趨勢分析
+            mtf_analysis = self.mtf_analyzer.analyze_structure(prices_1h, prices_4h, prices_1d)
+            
+            # 3. 生成基礎信號
             signal_gen = self.signal_generators.get(symbol)
-            
-            logger.debug(f"🔧 Calling generate_signal for {symbol}, model={'✅' if signal_gen.model else '❌'}")
-            
             signal = signal_gen.generate_signal(
                 symbol=symbol,
                 current_price=current_price,
-                price_history=prices
+                price_history=prices_1h
             )
             
             if signal:
                 logger.info(f"📈 Signal generated for {symbol}: {signal.signal_type.value} (Confidence: {signal.confidence:.2%})")
+                
+                # 4. Gemini AI 驗證
+                gemini_analysis = None
+                if self.gemini_validator and signal.confidence >= 0.5:
+                    logger.info(f"🤖 Requesting Gemini validation for {symbol}...")
+                    gemini_analysis = self.gemini_validator.validate_signal(
+                        symbol=symbol,
+                        signal_type=signal.signal_type.name,
+                        confidence=signal.confidence * 100,
+                        current_price=current_price,
+                        short_term_analysis=mtf_analysis['1h'],
+                        medium_term_analysis=mtf_analysis['4h'],
+                        long_term_analysis=mtf_analysis['1d'],
+                        technical_indicators=signal.technical_indicators
+                    )
+                    
+                    if gemini_analysis:
+                        logger.info(f"✨ Gemini Analysis: Valid={gemini_analysis.is_valid}, Score={gemini_analysis.validity_score}")
                 
                 # 更新信號到 Discord handler (用於 portfolio 命令)
                 signal_data = {
@@ -466,15 +515,16 @@ class RealtimeTradingBot:
                     'trend_direction': signal.trend_direction.value,
                     'trend_strength': signal.trend_strength,
                     'rsi': signal.technical_indicators.get('rsi', 50),
-                    'entry_price': signal.entry_price,
-                    'take_profit': signal.take_profit,
-                    'stop_loss': signal.stop_loss,
-                    'timestamp': datetime.now().isoformat()
+                    'entry_price': gemini_analysis.entry_price if gemini_analysis else signal.entry_price,
+                    'take_profit': gemini_analysis.take_profit if gemini_analysis else signal.take_profit,
+                    'stop_loss': gemini_analysis.stop_loss if gemini_analysis else signal.stop_loss,
+                    'timestamp': datetime.now().isoformat(),
+                    'ai_validity': gemini_analysis.validity_score if gemini_analysis else None
                 }
                 self.discord_handler.update_signal(symbol, signal_data)
                 
-                if self._should_send_signal(symbol, signal):
-                    self._send_signal_notification_sync(symbol, signal)
+                if self._should_send_signal(symbol, signal, gemini_analysis):
+                    self._send_signal_notification_sync(symbol, signal, gemini_analysis)
                     self.signal_history[symbol] = signal
                     self.last_signal_time[symbol] = datetime.now()
                 
@@ -487,15 +537,28 @@ class RealtimeTradingBot:
             logger.error(f"Error processing {symbol}: {e}", exc_info=True)
             return None
     
-    def _should_send_signal(self, symbol: str, signal: TradingSignal) -> bool:
+    def _should_send_signal(self, symbol: str, signal: TradingSignal, gemini_analysis=None) -> bool:
         """判斷是否應該發送信號通知"""
         if symbol in self.last_signal_time:
             time_since_last = datetime.now() - self.last_signal_time[symbol]
-            if time_since_last.total_seconds() < 3600:
+            # 如果是強信號且 AI 驗證通過，縮短冷卻時間
+            cooldown = 3600  # 默認 1 小時
+            if gemini_analysis and gemini_analysis.is_valid and gemini_analysis.validity_score > 80:
+                cooldown = 1800  # 30 分鐘
+            
+            if time_since_last.total_seconds() < cooldown:
                 return False
         
+        # 基礎過濾：信心度 > 50%
         if signal.confidence < 0.50:
             return False
+            
+        # 如果有 AI 驗證，使用更嚴格的標準
+        if gemini_analysis:
+            # AI 認為無效，或者評分太低
+            if not gemini_analysis.is_valid or gemini_analysis.validity_score < 60:
+                logger.info(f"🚫 Signal filtered by Gemini: score={gemini_analysis.validity_score}")
+                return False
         
         return True
     
