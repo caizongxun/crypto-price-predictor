@@ -190,25 +190,49 @@ class TrainingNotificationCog(commands.Cog):
                 timestamp=datetime.now()
             )
             
-            embed.add_field(name="💲 Current Price", value=f"${sig.get('current_price', 0):.2f}", inline=True)
-            embed.add_field(name="🎯 Predicted Price", value=f"${sig.get('predicted_price', 0):.2f}", inline=True)
-            embed.add_field(name="📈 Price Change", 
-                           value=f"{((sig.get('predicted_price', 0) - sig.get('current_price', 0)) / (sig.get('current_price', 0) + 1e-8) * 100):+.2f}%",
-                           inline=True)
+            # Safe float conversion helper
+            def safe_float(val):
+                try:
+                    return float(val) if val is not None else 0.0
+                except (ValueError, TypeError):
+                    return 0.0
+
+            current_price = safe_float(sig.get('current_price'))
+            predicted_price = safe_float(sig.get('predicted_price'))
+            confidence = safe_float(sig.get('confidence'))
+            rsi = safe_float(sig.get('rsi'))
+            entry_price = safe_float(sig.get('entry_price'))
+            take_profit = safe_float(sig.get('take_profit'))
+            stop_loss = safe_float(sig.get('stop_loss'))
             
-            embed.add_field(name="💯 Confidence", value=f"{sig.get('confidence', 0):.1%}", inline=True)
-            embed.add_field(name="📉 Trend", value=sig.get('trend_direction', 'N/A'), inline=True)
-            embed.add_field(name="📊 RSI", value=f"{sig.get('rsi', 50):.1f}", inline=True)
+            # Calculate price change safely
+            if current_price > 0:
+                price_change = (predicted_price - current_price) / current_price * 100
+            else:
+                price_change = 0.0
             
-            embed.add_field(name="🎶 Entry", value=f"${sig.get('entry_price', 0):.2f}", inline=True)
-            embed.add_field(name="✅ TP", value=f"${sig.get('take_profit', 0):.2f}", inline=True)
-            embed.add_field(name="❌ SL", value=f"${sig.get('stop_loss', 0):.2f}", inline=True)
+            embed.add_field(name="💲 Current Price", value=f"${current_price:,.2f}", inline=True)
+            embed.add_field(name="🎯 Predicted Price", value=f"${predicted_price:,.2f}", inline=True)
+            embed.add_field(name="📈 Price Change", value=f"{price_change:+.2f}%", inline=True)
             
+            embed.add_field(name="💯 Confidence", value=f"{confidence:.1%}", inline=True)
+            embed.add_field(name="📉 Trend", value=str(sig.get('trend_direction', 'N/A')), inline=True)
+            embed.add_field(name="📊 RSI", value=f"{rsi:.1f}", inline=True)
+            
+            embed.add_field(name="🎶 Entry", value=f"${entry_price:,.2f}", inline=True)
+            embed.add_field(name="✅ TP", value=f"${take_profit:,.2f}", inline=True)
+            embed.add_field(name="❌ SL", value=f"${stop_loss:,.2f}", inline=True)
+            
+            # Add AI Analysis info if available
+            ai_validity = sig.get('ai_validity')
+            if ai_validity is not None:
+                embed.add_field(name="🤖 AI Score", value=f"{float(ai_validity):.0f}/100", inline=True)
+
             embed.set_footer(text=f"Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
             await ctx.send(embed=embed)
             logger.info(f"✅ Symbol command for {symbol} executed by {ctx.author}")
         except Exception as e:
-            logger.error(f"Error in symbol command: {e}")
+            logger.error(f"Error in symbol command: {e}", exc_info=True)
             await ctx.send(f"❌ Error: {e}")
     
     @commands.command(name='status', help='Get bot status')
