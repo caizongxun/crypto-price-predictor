@@ -118,5 +118,198 @@ class TFTDataFetcherOptimized:
             gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
             loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
             rs = gain / (loss + 1e-8)
-            df['RSI'] = 100 - (100 / (1 + rs))\n            
-            # 3. ATR (Average True Range)\n            df['TR'] = pd.concat([\n                df['high'] - df['low'],\n                abs(df['high'] - df['close'].shift()),\n                abs(df['low'] - df['close'].shift())\n            ], axis=1).max(axis=1)\n            df['ATR'] = df['TR'].rolling(window=14).mean()\n            df = df.drop('TR', axis=1)\n            \n            # === Advanced Indicators ===\n            \n            # 4. EMA (Exponential Moving Average)\n            df['EMA_12'] = df['close'].ewm(span=12, adjust=False).mean()\n            df['EMA_26'] = df['close'].ewm(span=26, adjust=False).mean()\n            \n            # 5. MACD\n            df['MACD'] = df['EMA_12'] - df['EMA_26']\n            df['MACD_signal'] = df['MACD'].ewm(span=9, adjust=False).mean()\n            df['MACD_hist'] = df['MACD'] - df['MACD_signal']\n            \n            # 6. Bollinger Bands\n            bb_length = 20\n            bb_std = 2\n            df['BB_SMA'] = df['close'].rolling(window=bb_length).mean()\n            df['BB_STD'] = df['close'].rolling(window=bb_length).std()\n            df['BB_upper'] = df['BB_SMA'] + (df['BB_STD'] * bb_std)\n            df['BB_lower'] = df['BB_SMA'] - (df['BB_STD'] * bb_std)\n            df['BB_width'] = df['BB_upper'] - df['BB_lower']\n            df['BB_position'] = (df['close'] - df['BB_lower']) / (df['BB_upper'] - df['BB_lower'] + 1e-8)\n            \n            # 7. Stochastic\n            k_period = 14\n            d_period = 3\n            low_min = df['low'].rolling(window=k_period).min()\n            high_max = df['high'].rolling(window=k_period).max()\n            df['Stoch_K'] = 100 * (df['close'] - low_min) / (high_max - low_min + 1e-8)\n            df['Stoch_D'] = df['Stoch_K'].rolling(window=d_period).mean()\n            \n            # 8. OBV\n            df['OBV'] = (np.sign(df['close'].diff()) * df['volume']).fillna(0).cumsum()\n            \n            # 9. ROC\n            df['ROC_10'] = df['close'].pct_change(periods=10) * 100\n            df['ROC_20'] = df['close'].pct_change(periods=20) * 100\n            \n            # 10. Williams %R\n            df['Williams_R'] = -100 * (high_max - df['close']) / (high_max - low_min + 1e-8)\n            \n            # 11. CCI\n            tp = (df['high'] + df['low'] + df['close']) / 3\n            df['CCI'] = (tp - tp.rolling(window=20).mean()) / (0.015 * tp.rolling(window=20).std() + 1e-8)\n            \n            # 12. Volatility\n            df['Volatility'] = df['close'].pct_change().rolling(window=20).std() * 100\n            \n            # 13. Log Returns\n            if use_log_returns:\n                df['Log_Returns'] = np.log(df['close'] / df['close'].shift(1)) * 100\n            \n            # 14. CO Ratio\n            df['CO_Ratio'] = (df['close'] - df['open']) / (df['open'] + 1e-8)\n            \n            # 15. HL Ratio\n            df['HL_Ratio'] = (df['high'] - df['low']) / (df['low'] + 1e-8)\n            \n            df = df.dropna()\n            \n            logger.info(f\"✓ Added {len(df.columns)-2} advanced indicators\")\n            \n            return df\n        except Exception as e:\n            logger.error(f\"Failed to add indicators: {e}\")\n            return df\n    \n    def prepare_ml_features(\n        self,\n        df: pd.DataFrame,\n        lookback: int = 60,\n        scaler_type: str = 'robust'\n    ) -> Tuple[np.ndarray, np.ndarray, object]:\n        \"\"\"Prepare features for ML model with flexible scaling\"\"\"\n        try:\n            feature_cols = [c for c in df.columns if c not in ['symbol', 'close']]\n            feature_cols = ['close'] + feature_cols[:7]\n            \n            df_clean = df[feature_cols].copy()\n            \n            # Select Scaler\n            if scaler_type == 'robust':\n                scaler = RobustScaler()\n                logger.info(\"  Using RobustScaler (optimal for crypto volatility)\")\n            elif scaler_type == 'minmax':\n                scaler = MinMaxScaler()\n                logger.info(\"  Using MinMaxScaler\")\n            elif scaler_type == 'standard':\n                scaler = StandardScaler()\n                logger.info(\"  Using StandardScaler\")\n            elif scaler_type == 'quantile':\n                scaler = QuantileTransformer(output_distribution='uniform')\n                logger.info(\"  Using QuantileTransformer\")\n            else:\n                scaler = RobustScaler()\n            \n            scaled_data = scaler.fit_transform(df_clean)\n            \n            # Create sequences\n            X, y = [], []\n            for i in range(len(scaled_data) - lookback):\n                X.append(scaled_data[i:i+lookback])\n                y.append(df_clean['close'].iloc[i+lookback])\n            \n            X = np.array(X)\n            y = np.array(y)\n            \n            self.scaler = scaler\n            \n            logger.info(f\"✓ ML Features Prepared:\")\n            logger.info(f\"  - X shape: {X.shape}\")\n            logger.info(f\"  - y shape: {y.shape}\")\n            \n            return X, y, scaler\n        except Exception as e:\n            logger.error(f\"Failed to prepare ML features: {e}\")\n            return None, None, None\n    \n    def get_real_time_price(self, symbol: str) -> Optional[float]:\n        \"\"\"Get real-time price\"\"\"\n        try:\n            ticker = self.binance.fetch_ticker(symbol)\n            return ticker['last']\n        except Exception as e:\n            logger.error(f\"Failed to fetch real-time price for {symbol}: {e}\")\n            return None
+            df['RSI'] = 100 - (100 / (1 + rs))
+            
+            # 3. ATR (Average True Range)
+            df['TR'] = pd.concat([
+                df['high'] - df['low'],
+                abs(df['high'] - df['close'].shift()),
+                abs(df['low'] - df['close'].shift())
+            ], axis=1).max(axis=1)
+            df['ATR'] = df['TR'].rolling(window=14).mean()
+            df = df.drop('TR', axis=1)
+            
+            # === Advanced Indicators ===
+            
+            # 4. EMA (Exponential Moving Average)
+            df['EMA_12'] = df['close'].ewm(span=12, adjust=False).mean()
+            df['EMA_26'] = df['close'].ewm(span=26, adjust=False).mean()
+            
+            # 5. MACD
+            df['MACD'] = df['EMA_12'] - df['EMA_26']
+            df['MACD_signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
+            df['MACD_hist'] = df['MACD'] - df['MACD_signal']
+            
+            # 6. Bollinger Bands
+            bb_length = 20
+            bb_std = 2
+            df['BB_SMA'] = df['close'].rolling(window=bb_length).mean()
+            df['BB_STD'] = df['close'].rolling(window=bb_length).std()
+            df['BB_upper'] = df['BB_SMA'] + (df['BB_STD'] * bb_std)
+            df['BB_lower'] = df['BB_SMA'] - (df['BB_STD'] * bb_std)
+            df['BB_width'] = df['BB_upper'] - df['BB_lower']
+            df['BB_position'] = (df['close'] - df['BB_lower']) / (df['BB_upper'] - df['BB_lower'] + 1e-8)
+            
+            # 7. Stochastic
+            k_period = 14
+            d_period = 3
+            low_min = df['low'].rolling(window=k_period).min()
+            high_max = df['high'].rolling(window=k_period).max()
+            df['Stoch_K'] = 100 * (df['close'] - low_min) / (high_max - low_min + 1e-8)
+            df['Stoch_D'] = df['Stoch_K'].rolling(window=d_period).mean()
+            
+            # 8. OBV
+            df['OBV'] = (np.sign(df['close'].diff()) * df['volume']).fillna(0).cumsum()
+            
+            # 9. ROC
+            df['ROC_10'] = df['close'].pct_change(periods=10) * 100
+            df['ROC_20'] = df['close'].pct_change(periods=20) * 100
+            
+            # 10. Williams %R
+            df['Williams_R'] = -100 * (high_max - df['close']) / (high_max - low_min + 1e-8)
+            
+            # 11. CCI
+            tp = (df['high'] + df['low'] + df['close']) / 3
+            df['CCI'] = (tp - tp.rolling(window=20).mean()) / (0.015 * tp.rolling(window=20).std() + 1e-8)
+            
+            # 12. Volatility
+            df['Volatility'] = df['close'].pct_change().rolling(window=20).std() * 100
+            
+            # 13. Log Returns
+            if use_log_returns:
+                df['Log_Returns'] = np.log(df['close'] / df['close'].shift(1)) * 100
+            
+            # 14. CO Ratio
+            df['CO_Ratio'] = (df['close'] - df['open']) / (df['open'] + 1e-8)
+            
+            # 15. HL Ratio
+            df['HL_Ratio'] = (df['high'] - df['low']) / (df['low'] + 1e-8)
+            
+            df = df.dropna()
+            
+            logger.info(f"✓ Added {len(df.columns)-2} advanced indicators")
+            
+            return df
+        except Exception as e:
+            logger.error(f"Failed to add indicators: {e}")
+            return df
+    
+    def detect_outliers(self, df: pd.DataFrame, method: str = 'iqr') -> Tuple[pd.DataFrame, int]:
+        """Detect and remove outliers"""
+        try:
+            initial_len = len(df)
+            
+            if method == 'iqr':
+                Q1 = df['close'].quantile(0.25)
+                Q3 = df['close'].quantile(0.75)
+                IQR = Q3 - Q1
+                df = df[(df['close'] >= Q1 - 1.5 * IQR) & (df['close'] <= Q3 + 1.5 * IQR)]
+            
+            removed = initial_len - len(df)
+            logger.info(f"✓ Outlier detection complete ({removed} removed)")
+            return df, removed
+        except Exception as e:
+            logger.error(f"Failed outlier detection: {e}")
+            return df, 0
+    
+    def test_stationarity(self, df: pd.DataFrame, column: str = 'close') -> Dict:
+        """Test stationarity with ADF test"""
+        try:
+            result = adfuller(df[column].dropna())
+            logger.info(f"✓ ADF Test: statistic={result[0]:.4f}, p-value={result[1]:.4f}")
+            return {'statistic': result[0], 'p_value': result[1]}
+        except Exception as e:
+            logger.error(f"Stationarity test failed: {e}")
+            return {}
+    
+    def analyze_autocorrelation(self, df: pd.DataFrame, nlags: int = 40) -> Dict:
+        """Analyze autocorrelation"""
+        try:
+            acf_values = acf(df['close'].dropna(), nlags=nlags)
+            logger.info(f"✓ Autocorrelation analysis complete (lags={nlags})")
+            return {'acf': acf_values}
+        except Exception as e:
+            logger.error(f"Autocorrelation analysis failed: {e}")
+            return {}
+    
+    def select_features(self, df: pd.DataFrame, target: str = 'close', top_n: int = 12) -> List[str]:
+        """Select best features"""
+        try:
+            features = [c for c in df.columns if c != target]
+            X = df[features].fillna(0)
+            y = df[target]
+            
+            mi_scores = mutual_info_regression(X, y)
+            indices = np.argsort(mi_scores)[::-1][:top_n]
+            selected = [features[i] for i in indices]
+            
+            logger.info(f"✓ Selected {len(selected)} best features")
+            return selected
+        except Exception as e:
+            logger.error(f"Feature selection failed: {e}")
+            return ['close']
+    
+    def prepare_ml_features(
+        self,
+        df: pd.DataFrame,
+        lookback: int = 60,
+        scaler_type: str = 'robust',
+        selected_features: List[str] = None
+    ) -> Tuple[np.ndarray, np.ndarray, object]:
+        """Prepare features for ML model with flexible scaling"""
+        try:
+            if selected_features is None:
+                feature_cols = [c for c in df.columns if c not in ['symbol', 'close']]
+                feature_cols = ['close'] + feature_cols[:7]
+            else:
+                feature_cols = selected_features if 'close' in selected_features else ['close'] + selected_features
+            
+            df_clean = df[feature_cols].copy()
+            
+            # Select Scaler
+            if scaler_type == 'robust':
+                scaler = RobustScaler()
+                logger.info("  Using RobustScaler (optimal for crypto volatility)")
+            elif scaler_type == 'minmax':
+                scaler = MinMaxScaler()
+                logger.info("  Using MinMaxScaler")
+            elif scaler_type == 'standard':
+                scaler = StandardScaler()
+                logger.info("  Using StandardScaler")
+            elif scaler_type == 'quantile':
+                scaler = QuantileTransformer(output_distribution='uniform')
+                logger.info("  Using QuantileTransformer")
+            else:
+                scaler = RobustScaler()
+            
+            scaled_data = scaler.fit_transform(df_clean)
+            
+            # Create sequences
+            X, y = [], []
+            for i in range(len(scaled_data) - lookback):
+                X.append(scaled_data[i:i+lookback])
+                y.append(df_clean['close'].iloc[i+lookback])
+            
+            X = np.array(X)
+            y = np.array(y)
+            
+            self.scaler = scaler
+            
+            logger.info(f"✓ ML Features Prepared:")
+            logger.info(f"  - X shape: {X.shape}")
+            logger.info(f"  - y shape: {y.shape}")
+            logger.info(f"  - Features: {feature_cols}")
+            
+            return X, y, scaler
+        except Exception as e:
+            logger.error(f"Failed to prepare ML features: {e}")
+            return None, None, None
+    
+    def get_real_time_price(self, symbol: str) -> Optional[float]:
+        """Get real-time price"""
+        try:
+            ticker = self.binance.fetch_ticker(symbol)
+            return ticker['last']
+        except Exception as e:
+            logger.error(f"Failed to fetch real-time price for {symbol}: {e}")
+            return None
