@@ -44,6 +44,71 @@ class ModelComparator:
         })
         self.results = []
         
+    def detect_hidden_size(self, model_path: str) -> int:
+        """Auto-detect hidden_size from model weights."""
+        try:
+            checkpoint = torch.load(model_path, map_location='cpu')
+            if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+                state_dict = checkpoint['model_state_dict']
+            else:
+                state_dict = checkpoint
+            
+            # LSTM weight shape: [hidden_size * 4, input_or_hidden_size]
+            # First layer: lstm.weight_ih_l0 has shape [hidden_size*4, 17]
+            if 'lstm.weight_ih_l0' in state_dict:
+                weight_shape = state_dict['lstm.weight_ih_l0'].shape[0]
+                hidden_size = weight_shape // 4
+                logger.debug(f"Detected hidden_size: {hidden_size}")
+                return hidden_size
+        except Exception as e:
+            logger.debug(f"Error detecting hidden size: {e}")
+        
+        return None
+
+    def load_model_with_retry(self, model_path: str) -> LSTMModel:
+        """Try loading model with different configurations."""
+        if not os.path.exists(model_path):
+            return None
+        
+        # First, try to auto-detect hidden size
+        detected_hidden_size = self.detect_hidden_size(model_path)
+        if detected_hidden_size:
+            model = self._create_and_load(model_path, hidden_size=detected_hidden_size)
+            if model is not None:
+                return model
+        
+        # If detection failed, try common sizes
+        for hidden_size in [128, 256, 512, 1024]:
+            try:
+                model = self._create_and_load(model_path, hidden_size=hidden_size)
+                return model
+            except RuntimeError:
+                continue
+        
+        logger.error(f"❌ Could not load model: {Path(model_path).name}")
+        return None
+
+    def _create_and_load(self, model_path, hidden_size):
+        """Helper to create and load specific model config."""
+        model = LSTMModel(
+            input_size=17,
+            hidden_size=hidden_size,
+            num_layers=3,
+            output_size=5,
+            dropout=0.3
+        )
+        
+        checkpoint = torch.load(model_path, map_location=self.device)
+        if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+            state_dict = checkpoint['model_state_dict']
+        else:
+            state_dict = checkpoint
+            
+        model.load_state_dict(state_dict)
+        model.to(self.device)
+        model.eval()
+        return model
+    
     def fetch_data(self, symbol: str, limit: int = 500) -> pd.DataFrame:
         """Fetch OHLCV data without API keys."""
         try:
@@ -57,59 +122,6 @@ class ModelComparator:
             logger.error(f"Error fetching data for {symbol}: {e}")
             return None
 
-    def load_model_with_retry(self, model_path: str) -> LSTMModel:
-        """Try loading model with different configurations."""
-        if not os.path.exists(model_path):
-            return None
-            
-        # Try config 1: hidden_size=256 (Standard)
-        try:
-            model = self._create_and_load(model_path, hidden_size=256)
-            return model
-        except RuntimeError:
-            pass
-            
-        # Try config 2: hidden_size=128 (Smaller)
-        try:
-            # logger.info(f"Retrying {Path(model_path).name} with hidden_size=128...")
-            model = self._create_and_load(model_path, hidden_size=128)
-            return model
-        except RuntimeError:
-            pass
-            
-        # Try config 3: hidden_size=512 (Larger)
-        try:
-            model = self._create_and_load(model_path, hidden_size=512)
-            return model
-        except Exception as e:
-            logger.error(f"❌ All load attempts failed for {model_path}: {e}")
-            return None
-
-    def _create_and_load(self, model_path, hidden_size):
-        """Helper to create and load specific model config."""
-        # Manually create model instance to bypass Trainer defaults
-        model = LSTMModel(
-            input_size=17,
-            hidden_size=hidden_size,
-            num_layers=3,
-            output_size=5,
-            dropout=0.3
-        )
-        
-        # Load state dict
-        checkpoint = torch.load(model_path, map_location=self.device)
-        
-        # Handle if checkpoint is full dict or just state_dict
-        if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
-            state_dict = checkpoint['model_state_dict']
-        else:
-            state_dict = checkpoint
-            
-        model.load_state_dict(state_dict)
-        model.to(self.device)
-        model.eval()
-        return model
-    
     def calculate_metrics(self, y_true: np.ndarray, y_pred: np.ndarray) -> dict:
         """Calculate accuracy metrics."""
         mae = np.mean(np.abs(y_true - y_pred))
