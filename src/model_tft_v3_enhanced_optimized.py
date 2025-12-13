@@ -61,11 +61,11 @@ class MultiHeadDirectionalAttention(nn.Module):
         self.W_k = nn.Linear(hidden_size, hidden_size)
         self.W_v = nn.Linear(hidden_size, hidden_size)
         
-        # Direction-aware attention weighting
+        # Direction-aware attention weighting (simplified)
         self.direction_scorer = nn.Sequential(
             nn.Linear(hidden_size, hidden_size // 2),
             nn.GELU(),
-            nn.Linear(hidden_size // 2, num_heads)
+            nn.Linear(hidden_size // 2, 1)  # Single scalar per position
         )
         
         self.fc_out = nn.Linear(hidden_size, hidden_size)
@@ -100,11 +100,12 @@ class MultiHeadDirectionalAttention(nn.Module):
         # Scaled dot-product attention
         scores = torch.matmul(Q, K.transpose(-2, -1)) / self.scale
         
-        # Direction-aware attention boost
+        # Direction-aware attention boost (simplified)
         if direction_signal is not None:
-            dir_weights = self.direction_scorer(query)  # (batch, seq_len, num_heads)
-            dir_weights = dir_weights.permute(0, 2, 1).unsqueeze(-1)  # (batch, num_heads, seq_len, 1)
-            scores = scores + 0.3 * dir_weights  # Boost attention based on direction
+            dir_weights = self.direction_scorer(query)  # (batch, seq_len, 1)
+            dir_weights = dir_weights.squeeze(-1)  # (batch, seq_len)
+            dir_weights = dir_weights.unsqueeze(1).unsqueeze(1)  # (batch, 1, 1, seq_len)
+            scores = scores + 0.1 * dir_weights  # Boost attention based on direction
         
         # Apply mask if provided
         if mask is not None:
@@ -458,9 +459,9 @@ if __name__ == '__main__':
     
     model = TemporalFusionTransformerV3EnhancedOptimized(
         input_size=input_size,
-        hidden_size=256,
+        hidden_size=128,
         num_heads=8,
-        num_layers=3,
+        num_layers=2,
         dropout=0.2,
         forecast_steps=5,
         use_direction_head=True,
