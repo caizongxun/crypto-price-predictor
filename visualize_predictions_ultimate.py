@@ -9,7 +9,7 @@ import torch
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import seaborn as sns
+from scipy.stats import gaussian_kde
 from src.model_trainer_ultimate import UltimateLSTMModel, UltimateGRUModel, UltimateTransformerModel, UltimateEnsembleModel
 from src.data_fetcher import DataFetcher
 from sklearn.preprocessing import StandardScaler
@@ -152,23 +152,34 @@ def visualize_ultimate(symbol='SOL', lookback=60, future_steps=1):
         ax1.legend(loc='best')
         ax1.grid(True, alpha=0.3)
         
-        # Plot 2: Error Distribution
+        # Plot 2: Error Distribution with KDE
         ax2 = plt.subplot(2, 2, 2)
         errors = predictions - y
-        ax2.hist(errors, bins=50, kde=True, color='purple', alpha=0.6)
-        ax2.axvline(x=0, color='red', linestyle='--', label='Zero Error')
+        
+        # Histogram
+        n, bins, patches = ax2.hist(errors, bins=50, color='purple', alpha=0.6, density=True)
+        
+        # Add KDE curve
+        try:
+            kde = gaussian_kde(errors)
+            x_range = np.linspace(errors.min(), errors.max(), 200)
+            ax2.plot(x_range, kde(x_range), 'r-', linewidth=2, label='KDE')
+        except:
+            logger.warning("Could not compute KDE")
+        
+        ax2.axvline(x=0, color='red', linestyle='--', alpha=0.7, label='Zero Error')
         ax2.set_title('Prediction Error Distribution', fontsize=12, fontweight='bold')
         ax2.set_xlabel('Prediction Error (Normalized)')
-        ax2.set_ylabel('Frequency')
+        ax2.set_ylabel('Frequency (Density)')
         ax2.legend()
         ax2.grid(True, alpha=0.3)
         
         # Plot 3: Actual vs Predicted Scatter
         ax3 = plt.subplot(2, 2, 3)
-        ax3.scatter(y, predictions, alpha=0.5, s=20)
+        ax3.scatter(y, predictions, alpha=0.5, s=20, color='blue')
         min_val = min(y.min(), predictions.min())
         max_val = max(y.max(), predictions.max())
-        ax3.plot([min_val, max_val], [min_val, max_val], 'r--', label='Perfect Prediction')
+        ax3.plot([min_val, max_val], [min_val, max_val], 'r--', linewidth=2, label='Perfect Prediction')
         ax3.set_title('Actual vs Predicted Values', fontsize=12, fontweight='bold')
         ax3.set_xlabel('Actual (Normalized)')
         ax3.set_ylabel('Predicted (Normalized)')
