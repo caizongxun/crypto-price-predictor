@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
-Visualize Ultimate Model Predictions
+Visualize Ultimate Model Predictions (Updated for 20-Feature Model)
 Loads the trained Ultimate Ensemble model and visualizes predictions vs actuals.
+
+Key Update: Now uses 20 features instead of 13 to match the new model architecture.
 """
 
 import os
@@ -12,7 +14,7 @@ import matplotlib.pyplot as plt
 from scipy.stats import gaussian_kde
 from src.model_trainer_ultimate import UltimateLSTMModel, UltimateGRUModel, UltimateTransformerModel, UltimateEnsembleModel
 from src.data_fetcher import DataFetcher
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import MinMaxScaler
 import logging
 from src.utils import setup_logging
 
@@ -23,7 +25,7 @@ logger = logging.getLogger(__name__)
 def load_ultimate_model(model_path, input_size, device):
     """Load the trained Ultimate Ensemble model"""
     try:
-        # Initialize sub-models
+        # Initialize sub-models with correct input_size
         lstm = UltimateLSTMModel(input_size).to(device)
         gru = UltimateGRUModel(input_size).to(device)
         transformer = UltimateTransformerModel(input_size).to(device)
@@ -37,6 +39,7 @@ def load_ultimate_model(model_path, input_size, device):
         model.eval()
         
         logger.info(f"Model loaded successfully from {model_path}")
+        logger.info(f"Model input size: {input_size} features")
         return model
     except Exception as e:
         logger.error(f"Failed to load model: {e}")
@@ -52,10 +55,10 @@ def visualize_ultimate(symbol='SOL', lookback=60, future_steps=1):
         logger.info(f"Initializing data fetcher...")
         fetcher = DataFetcher()
         
-        # 2. Fetch Data from Binance
+        # 2. Fetch Data from Binance (using 10000 candles to match training data)
         trading_pair = f"{symbol}/USDT"
         logger.info(f"Fetching historical data for {trading_pair}...")
-        df = fetcher.fetch_ohlcv_binance(trading_pair, timeframe='1h', limit=1000)
+        df = fetcher.fetch_ohlcv_binance(trading_pair, timeframe='1h', limit=10000)
         
         if df is None or df.empty:
             logger.error(f"Failed to fetch data for {symbol}")
@@ -63,30 +66,39 @@ def visualize_ultimate(symbol='SOL', lookback=60, future_steps=1):
         
         logger.info(f"Fetched {len(df)} candles")
         
-        # 3. Add Technical Indicators
+        # 3. Add Technical Indicators (includes 20 features)
         logger.info(f"Adding technical indicators...")
         df = fetcher.add_technical_indicators(df)
         
-        # 4. Prepare Features
-        logger.info(f"Preparing ML features...")
+        # 4. Prepare Features (20 features matching new model)
+        logger.info(f"Preparing ML features with 20-feature set...")
         feature_cols = [
             'open', 'high', 'low', 'close', 'volume',
-            'SMA_10', 'SMA_20', 'SMA_50',
-            'RSI', 'MACD', 'MACD_diff',
-            'BB_upper', 'BB_lower', 'ATR',
-            'Volume_ratio', 'Daily_return', 'Price_momentum'
+            'SMA_10', 'SMA_20', 'EMA_12',
+            'RSI', 'MACD', 'MACD_signal',
+            'BB_upper', 'BB_lower',
+            'Volume_ratio', 'Daily_return',
+            'ROC_1', 'ROC_5',
+            'Price_accel', 'Volume_accel',
+            'Stoch_K', 'Stoch_D', 'Volatility'
         ]
         
-        # Handle missing columns if any
+        # Check which columns are available
         available_cols = [c for c in feature_cols if c in df.columns]
         logger.info(f"Using {len(available_cols)} features: {available_cols}")
+        
+        if len(available_cols) != 20:
+            logger.warning(f"Expected 20 features but found {len(available_cols)}")
+            logger.warning(f"Missing: {set(feature_cols) - set(available_cols)}")
         
         # Remove NaN values
         df_clean = df[available_cols].dropna()
         data = df_clean.values
         
-        # Scaling
-        scaler = StandardScaler()
+        logger.info(f"Data shape after dropping NaN: {data.shape}")
+        
+        # Scaling using MinMaxScaler (matching training pipeline)
+        scaler = MinMaxScaler(feature_range=(0, 1))
         data_scaled = scaler.fit_transform(data)
         
         # Create sequences
@@ -103,8 +115,9 @@ def visualize_ultimate(symbol='SOL', lookback=60, future_steps=1):
         dates = np.array(dates)
         
         logger.info(f"Created {len(X)} sequences for prediction")
+        logger.info(f"X shape: {X.shape} (samples, lookback, features)")
         
-        # 5. Load Model (Using standard name)
+        # 5. Load Model
         model_path = f'models/saved_models/{symbol}_model.pth'
         
         # Fallback to ultimate name if standard not found
@@ -115,10 +128,12 @@ def visualize_ultimate(symbol='SOL', lookback=60, future_steps=1):
                 model_path = fallback_path
             else:
                 logger.error(f"Model file not found: {model_path}")
+                logger.error(f"Please train the model first using: python train_model_ultimate.py --symbol {symbol}")
                 return
         
         logger.info(f"Loading model from: {model_path}")
-        input_size = X.shape[2]
+        input_size = X.shape[2]  # Should be 20 or 22 depending on features available
+        logger.info(f"Model input size: {input_size}")
         model = load_ultimate_model(model_path, input_size, device)
         
         # 6. Make Predictions
@@ -130,16 +145,19 @@ def visualize_ultimate(symbol='SOL', lookback=60, future_steps=1):
         mae = np.mean(np.abs(predictions - y))
         mse = np.mean((predictions - y) ** 2)
         rmse = np.sqrt(mse)
+        r2 = 1 - (np.sum((y - predictions) ** 2) / np.sum((y - np.mean(y)) ** 2))
         
         logger.info(f"\n" + "="*60)
         logger.info(f"Model Performance Metrics for {symbol}:")
         logger.info(f"  MAE:  {mae:.6f}")
         logger.info(f"  RMSE: {rmse:.6f}")
+        logger.info(f"  R²:   {r2:.6f}")
         logger.info(f"  Samples: {len(predictions)}")
+        logger.info(f"  Features: {input_size}")
         logger.info("="*60)
         
         # 8. Visualization
-        fig = plt.figure(figsize=(16, 10))
+        fig = plt.figure(figsize=(16, 12))
         
         # Plot 1: Price Prediction (Last 100 points)
         ax1 = plt.subplot(2, 2, 1)
@@ -203,7 +221,7 @@ def visualize_ultimate(symbol='SOL', lookback=60, future_steps=1):
         # Save plot
         output_dir = 'analysis_plots'
         os.makedirs(output_dir, exist_ok=True)
-        save_path = os.path.join(output_dir, f'{symbol}_prediction_analysis.png')
+        save_path = os.path.join(output_dir, f'{symbol}_prediction_analysis_ultimate.png')
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
         logger.info(f"\nPlot saved to: {save_path}")
         
@@ -217,8 +235,8 @@ def visualize_ultimate(symbol='SOL', lookback=60, future_steps=1):
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--symbol', type=str, default='SOL')
+    parser = argparse.ArgumentParser(description='Visualize Ultimate Model Predictions')
+    parser.add_argument('--symbol', type=str, default='SOL', help='Cryptocurrency symbol (default: SOL)')
     args = parser.parse_args()
     
     logger.info(f"Starting visualization for {args.symbol}...\n")
