@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-CPU-Safe Training Script for Cryptocurrency Price Prediction
+CPU-Safe Training Script for Cryptocurrency Price Prediction (Binance API Version)
 
 Usage:
   python train_model_cpu_safe.py --symbol BTC --epochs 50
@@ -13,6 +13,7 @@ Why this script?
 - num_workers=0 for Windows compatibility
 - Memory monitoring to prevent system freeze
 - Safe for CPU-only machines
+- Uses Binance API for accurate crypto data
 """
 
 import argparse
@@ -21,8 +22,9 @@ from pathlib import Path
 import sys
 import numpy as np
 import torch
-import yfinance as yf
+import ccxt
 from dotenv import load_dotenv
+import os
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent))
@@ -36,37 +38,144 @@ setup_logging(log_level='INFO', log_file='logs/training_cpu_safe.log')
 logger = logging.getLogger(__name__)
 
 
-def fetch_crypto_data_yfinance(symbol: str, period: str = '2y') -> dict:
+def fetch_crypto_data_binance(symbol: str, lookback_days: int = 60) -> dict:
     """
-    Fetch cryptocurrency data from yfinance.
+    Fetch cryptocurrency data from Binance API.
     
     Args:
         symbol: Cryptocurrency symbol (BTC, ETH, SOL, etc.)
-        period: Period to fetch (1y, 2y, 5y, etc.)
+        lookback_days: Number of days to fetch (default: 60, max: 2000)
+        
+    Returns:
+        DataFrame with OHLCV data or None if failed
+    """
+    try:
+        # Get API credentials from .env
+        api_key = os.getenv('BINANCE_API_KEY')
+        api_secret = os.getenv('BINANCE_API_SECRET')
+        
+        if not api_key or not api_secret:
+            logger.warning("Binance API credentials not found in .env")
+            logger.warning("Falling back to Kraken API...")
+            return None
+        
+        logger.info(f"Initializing Binance API...")
+        binance = ccxt.binance({
+            'apiKey': api_key,
+            'secret': api_secret,
+            'enableRateLimit': True,
+            'options': {'defaultType': 'spot'}
+        })
+        
+        # Convert symbol to trading pair
+        trading_pair = f"{symbol}/USDT"
+        logger.info(f"Fetching {trading_pair} from Binance...")
+        
+        # Fetch OHLCV data (daily candles)
+        timeframe = '1d'  # 1 day candles
+        limit = min(lookback_days + 10, 1000)  # Binance limit is 1000
+        
+        ohlcv = binance.fetch_ohlcv(trading_pair, timeframe, limit=limit)
+        
+        if not ohlcv:
+            logger.error(f"No data fetched for {symbol}")
+            return None
+        
+        # Convert to DataFrame format
+        import pandas as pd
+        df = pd.DataFrame(
+            ohlcv,
+            columns=['timestamp', 'open', 'high', 'low', 'close', 'volume']
+        )
+        
+        # Convert timestamp to datetime
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        df.set_index('timestamp', inplace=True)
+        
+        logger.info(f"Successfully fetched {len(df)} candles for {symbol}")
+        logger.info(f"Date range: {df.index[0]} to {df.index[-1]}")
+        
+        return df
+        
+    except Exception as e:
+        logger.error(f"Failed to fetch data from Binance: {e}")
+        logger.info("Falling back to alternative data source...")
+        return None
+
+
+def fetch_crypto_data_kraken(symbol: str, lookback_days: int = 60):
+    """
+    Fallback: Fetch cryptocurrency data from Kraken API (free, no auth needed).
+    
+    Args:
+        symbol: Cryptocurrency symbol (BTC, ETH, SOL, etc.)
+        lookback_days: Number of days to fetch
         
     Returns:
         DataFrame with OHLCV data
     """
     try:
-        yf_symbol = f"{symbol}-USD"
-        logger.info(f"Fetching {yf_symbol} data from yfinance...")
+        logger.info(f"Initializing Kraken API (fallback)...")
+        kraken = ccxt.kraken({
+            'enableRateLimit': True,
+            'options': {'defaultType': 'spot'}
+        })
         
-        ticker = yf.Ticker(yf_symbol)
-        df = ticker.history(period=period, interval='1d')
+        trading_pair = f"{symbol}/USDT"
+        logger.info(f"Fetching {trading_pair} from Kraken...")
         
-        if df.empty:
+        timeframe = '1d'
+        limit = min(lookback_days + 10, 720)  # Kraken limit
+        
+        ohlcv = kraken.fetch_ohlcv(trading_pair, timeframe, limit=limit)
+        
+        if not ohlcv:
             logger.error(f"No data fetched for {symbol}")
             return None
         
-        df.columns = df.columns.str.lower()
-        df = df.rename(columns={'adj close': 'close'})
+        import pandas as pd
+        df = pd.DataFrame(
+            ohlcv,
+            columns=['timestamp', 'open', 'high', 'low', 'close', 'volume']
+        )
         
-        logger.info(f"Successfully fetched {len(df)} days of data for {symbol}")
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        df.set_index('timestamp', inplace=True)
+        
+        logger.info(f"Successfully fetched {len(df)} candles from Kraken")
         return df
         
     except Exception as e:
-        logger.error(f"Failed to fetch data for {symbol}: {e}")
+        logger.error(f"Failed to fetch data from Kraken: {e}")
         return None
+
+
+def fetch_crypto_data(symbol: str, lookback_days: int = 60):
+    """
+    Fetch crypto data with automatic fallback.
+    
+    Try Binance first, then Kraken if Binance fails.
+    
+    Args:
+        symbol: Cryptocurrency symbol
+        lookback_days: Number of days to fetch
+        
+    Returns:
+        DataFrame with OHLCV data
+    """
+    # Try Binance first (more accurate)
+    df = fetch_crypto_data_binance(symbol, lookback_days)
+    if df is not None:
+        return df
+    
+    # Fall back to Kraken
+    logger.info("\nTrying Kraken API as fallback...")
+    df = fetch_crypto_data_kraken(symbol, lookback_days)
+    if df is not None:
+        return df
+    
+    # If both fail, raise error
+    raise Exception(f"Could not fetch data for {symbol} from any source")
 
 
 def add_technical_indicators_simple(df):
@@ -194,7 +303,7 @@ def train_model_cpu_safe(
         logger.info("CPU-OPTIMIZED CRYPTOCURRENCY PRICE PREDICTION TRAINING")
         logger.info("="*80)
         logger.info(f"Symbol: {symbol}")
-        logger.info(f"Data Source: YFinance (free, no API key)")
+        logger.info(f"Data Source: Binance API (with Kraken fallback)")
         logger.info(f"Lookback Period: {lookback} days")
         logger.info(f"Training Configuration:")
         logger.info(f"  - Epochs: {epochs}")
@@ -204,14 +313,14 @@ def train_model_cpu_safe(
         logger.info("="*80)
         
         # Step 1: Fetch data
-        logger.info("\n[Step 1/5] Fetching historical data...")
-        df = fetch_crypto_data_yfinance(symbol, period='2y')
+        logger.info("\n[Step 1/5] Fetching historical data from Binance...")
+        df = fetch_crypto_data(symbol, lookback)
         
         if df is None or df.empty:
             logger.error(f"Failed to fetch data for {symbol}")
             return False
         
-        logger.info(f"[OK] Fetched {len(df)} days of data")
+        logger.info(f"[OK] Fetched {len(df)} candles for {symbol}")
         
         # Step 2: Add technical indicators
         logger.info("\n[Step 2/5] Adding technical indicators...")
@@ -271,7 +380,7 @@ def train_model_cpu_safe(
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
-        description='Train CPU-optimized cryptocurrency prediction model',
+        description='Train CPU-optimized cryptocurrency prediction model (Binance API)',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
