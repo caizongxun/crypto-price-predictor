@@ -157,7 +157,15 @@ def predict_multistep(model, X_latest, steps=5, device='cpu'):
     with torch.no_grad():
         for _ in range(steps):
             X_tensor = torch.tensor(current_X, dtype=torch.float32).to(device)
-            pred = model(X_tensor).cpu().numpy().flatten()[0]
+            if hasattr(model, 'use_direction_head') and model.use_direction_head:
+                pred, _ = model(X_tensor, return_direction_logits=True)
+            else:
+                pred = model(X_tensor)
+            pred = pred.squeeze().cpu().numpy()
+            if pred.ndim == 0:
+                pred = float(pred)
+            else:
+                pred = pred[0] if len(pred) > 0 else 0
             predictions.append(pred)
             
             current_X = np.roll(current_X, -1, axis=1)
@@ -200,6 +208,7 @@ def visualize_tft_v3(symbol='SOL', lookback=60, predict_steps=5):
         
         if not os.path.exists(model_path):
             logger.error(f"Model not found: {model_path}")
+            logger.info(f"Searched for: {model_path}")
             return
         
         input_size = X.shape[2]
@@ -253,10 +262,12 @@ def visualize_tft_v3(symbol='SOL', lookback=60, predict_steps=5):
         # Multi-step prediction
         logger.info(f"[8/8] Multi-step forecasting...")
         if len(X) > 0:
-            future_preds_scaled = predict_multistep(model, X[[-1]], steps=predict_steps, device=str(device))
+            future_preds_scaled = predict_multistep(model, X[[-1]], steps=predict_steps, device=device)
             future_full = np.zeros((len(future_preds_scaled), num_features))
             future_full[:, 0] = future_preds_scaled
             future_inverse = scaler.inverse_transform(future_full)[:, 0]
+        else:
+            future_inverse = np.zeros(predict_steps)
         
         # Print results
         logger.info("\n" + "="*80)
@@ -294,8 +305,11 @@ def visualize_tft_v3(symbol='SOL', lookback=60, predict_steps=5):
         logger.info(f"\nMULTI-STEP FORECAST ({predict_steps} Candles):")
         logger.info(f"  Current Price: {y_true[-1]:.4f} USD")
         for i, price in enumerate(future_inverse, 1):
-            change = ((price - y_true[-1]) / y_true[-1]) * 100
-            logger.info(f"  +{i}h: {price:.4f} USD ({change:+.2f}%)")
+            if y_true[-1] != 0:
+                change = ((price - y_true[-1]) / y_true[-1]) * 100
+                logger.info(f"  +{i}h: {price:.4f} USD ({change:+.2f}%)")
+            else:
+                logger.info(f"  +{i}h: {price:.4f} USD")
         
         logger.info("="*80)
         
