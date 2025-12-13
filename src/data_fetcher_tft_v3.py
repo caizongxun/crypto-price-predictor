@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-🚀 TFT V3 Data Fetcher & Feature Engineering
+TFT V3 Data Fetcher & Feature Engineering
 
-✨ ADVANCED IMPROVEMENTS:
+ADVANCED IMPROVEMENTS:
 
 1. INTELLIGENT FEATURE SELECTION
    - Drop highly correlated features
@@ -26,9 +26,9 @@
    - Market Profile (price distribution)
 
 5. FEATURE INTERACTION TERMS
-   - Momentum × Volatility
-   - Trend × Volume
-   - Price × Channels
+   - Momentum x Volatility
+   - Trend x Volume
+   - Price x Channels
 
 6. MISSING VALUE HANDLING
    - Forward fill with decay
@@ -68,11 +68,11 @@ class TFTDataFetcherV3:
             df.set_index('timestamp', inplace=True)
             df = df.astype(float)
             
-            logger.info(f"✓ Fetched {len(df)} candles for {symbol}")
+            logger.info(f"Fetched {len(df)} candles for {symbol}")
             return df
         
         except Exception as e:
-            logger.error(f"✗ Failed to fetch {symbol}: {e}")
+            logger.error(f"Failed to fetch {symbol}: {e}")
             return None
     
     def add_volatility_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -97,7 +97,7 @@ class TFTDataFetcherV3:
         
         # Historical Volatility
         df['returns'] = df['close'].pct_change()
-        df['hv10'] = df['returns'].rolling(10).std() * np.sqrt(24)  # Annualized
+        df['hv10'] = df['returns'].rolling(10).std() * np.sqrt(24)
         df['hv20'] = df['returns'].rolling(20).std() * np.sqrt(24)
         df['hv50'] = df['returns'].rolling(50).std() * np.sqrt(24)
         
@@ -197,7 +197,7 @@ class TFTDataFetcherV3:
         # Clean NaN
         df = df.fillna(method='bfill').fillna(method='ffill')
         
-        logger.info(f"✓ Added {len(df.columns)} total features")
+        logger.info(f"Added {len(df.columns)} total features")
         return df
     
     def select_best_features(self, X: np.ndarray, y: np.ndarray, n_features: int = 20) -> Tuple[np.ndarray, List[str]]:
@@ -251,14 +251,13 @@ class TFTDataFetcherV3:
         X = np.array(X)
         y = np.array(y)
         
-        logger.info(f"✓ Created {len(X)} sequences of shape {X.shape}")
-        logger.info(f"✓ Feature count: {X.shape[2]}")
+        logger.info(f"Created {len(X)} sequences of shape {X.shape}")
+        logger.info(f"Feature count: {X.shape[2]}")
         
         self.scaler = scaler
         return X, y, scaler
 
 
-# Keep original for backward compatibility
 class TFTDataFetcher(TFTDataFetcherV3):
     """Original TFT Data Fetcher - uses V3 under the hood"""
     
