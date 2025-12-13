@@ -433,12 +433,19 @@ def visualize_tft_v3(symbol='SOL', lookback=60, predict_steps=5):
         ax6.legend()
         ax6.grid(True, alpha=0.3, axis='y')
         
-        # Plot 7: Multi-step forecast
+        # Plot 7: Multi-step forecast (FIXED)
         ax7 = plt.subplot(3, 3, 7)
-        ax7.plot(range(len(y_true[-20:])), y_true[-20:], 'o-', color='blue', label='Historical', linewidth=2)
-        ax7.plot(range(len(y_true[-20:]) - 1, len(y_true[-20:]) + predict_steps - 1),
-                np.concatenate([[y_true[-1]], future_inverse]), 's--', color='green',
-                label='Forecast', linewidth=2, markersize=8)
+        hist_len = 20
+        hist_data = y_true[-hist_len:]
+        hist_x = np.arange(hist_len)
+        
+        # Plot historical data
+        ax7.plot(hist_x, hist_data, 'o-', color='blue', label='Historical', linewidth=2)
+        
+        # Plot forecast data - append current price to forecast
+        forecast_data = np.concatenate([[y_true[-1]], future_inverse])
+        forecast_x = np.arange(hist_len - 1, hist_len - 1 + len(forecast_data))
+        ax7.plot(forecast_x, forecast_data, 's--', color='green', label='Forecast', linewidth=2, markersize=8)
         
         ax7.set_title(f'Multi-Step Forecast ({predict_steps}h ahead)',
                      fontsize=12, fontweight='bold')
