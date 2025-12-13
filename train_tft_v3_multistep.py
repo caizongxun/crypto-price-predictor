@@ -360,9 +360,9 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logger.info(f"Using device: {device}")
     
-    # Model initialization
+    # Model initialization - FIXED: use input_size=44 (actual feature count from data fetcher)
     model = TemporalFusionTransformerV3EnhancedOptimized(
-        input_size=8,
+        input_size=44,  # ✅ FIXED: Was 8, should be 44 (actual feature count)
         hidden_size=args.hidden_size,
         num_heads=8,
         num_layers=args.num_layers,
