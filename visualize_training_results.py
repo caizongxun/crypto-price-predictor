@@ -1,24 +1,23 @@
 #!/usr/bin/env python3
 """
-📊 Visualize Training Results
+Visualize Training Results and Model Evaluation
 
-Display training metrics and model performance
+View training metrics with matplotlib charts
+Works in PyCharm and command line
 
 Usage:
   python visualize_training_results.py --symbol SOL
-  python visualize_training_results.py --symbol BTC --model directional
+  python visualize_training_results.py --symbol SOL --eval
 """
 
 import argparse
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
-import json
 import sys
 import torch
 from datetime import datetime
 
-# Add src to path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from src.data_fetcher_tft_v3 import TFTDataFetcher
@@ -47,7 +46,6 @@ def plot_training_metrics(symbol, model_type='directional'):
     
     for line in lines:
         if 'Epoch' in line and 'Loss' in line and symbol in line:
-            # Parse: Epoch  10/150 | Loss: 17436.929443/14839.775879 | Dir Acc: 44.66%/37.72%
             try:
                 parts = line.split('|')
                 epoch_part = parts[0].split('Epoch')[1].strip().split('/')[0]
@@ -74,41 +72,41 @@ def plot_training_metrics(symbol, model_type='directional'):
         return
     
     # Create figure with subplots
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig, axes = plt.subplots(2, 2, figsize=(15, 10))
     fig.suptitle(f'Training Metrics - {symbol} ({model_type.upper()})', fontsize=16, fontweight='bold')
     
     # Plot 1: Training Loss
     ax = axes[0, 0]
-    ax.plot(epochs, train_losses, label='Train Loss', marker='o', markersize=4, linewidth=2)
-    ax.plot(epochs, val_losses, label='Val Loss', marker='s', markersize=4, linewidth=2)
-    ax.set_xlabel('Epoch')
-    ax.set_ylabel('Loss')
-    ax.set_title('Loss Evolution')
-    ax.legend()
+    ax.plot(epochs, train_losses, label='Train Loss', marker='o', markersize=4, linewidth=2, color='blue')
+    ax.plot(epochs, val_losses, label='Val Loss', marker='s', markersize=4, linewidth=2, color='red')
+    ax.set_xlabel('Epoch', fontsize=11)
+    ax.set_ylabel('Loss', fontsize=11)
+    ax.set_title('Loss Evolution', fontsize=12, fontweight='bold')
+    ax.legend(fontsize=10)
     ax.grid(True, alpha=0.3)
     if train_losses and val_losses:
         ax.set_yscale('log')
     
     # Plot 2: Directional Accuracy
     ax = axes[0, 1]
-    ax.plot(epochs, [acc*100 for acc in train_dir_accs], label='Train Dir Acc', marker='o', markersize=4, linewidth=2)
-    ax.plot(epochs, [acc*100 for acc in val_dir_accs], label='Val Dir Acc', marker='s', markersize=4, linewidth=2)
-    ax.axhline(y=33.33, color='r', linestyle='--', label='Random (33%)', alpha=0.5)
-    ax.set_xlabel('Epoch')
-    ax.set_ylabel('Directional Accuracy (%)')
-    ax.set_title('Directional Accuracy Evolution')
+    ax.plot(epochs, [acc*100 for acc in train_dir_accs], label='Train Dir Acc', marker='o', markersize=4, linewidth=2, color='green')
+    ax.plot(epochs, [acc*100 for acc in val_dir_accs], label='Val Dir Acc', marker='s', markersize=4, linewidth=2, color='orange')
+    ax.axhline(y=33.33, color='r', linestyle='--', label='Random (33%)', alpha=0.5, linewidth=1.5)
+    ax.set_xlabel('Epoch', fontsize=11)
+    ax.set_ylabel('Directional Accuracy (%)', fontsize=11)
+    ax.set_title('Directional Accuracy Evolution', fontsize=12, fontweight='bold')
     ax.set_ylim([0, 100])
-    ax.legend()
+    ax.legend(fontsize=10)
     ax.grid(True, alpha=0.3)
     
     # Plot 3: Loss vs Dir Acc (correlation)
     ax = axes[1, 0]
-    ax.scatter(train_losses, train_dir_accs, label='Train', alpha=0.6, s=50)
-    ax.scatter(val_losses, val_dir_accs, label='Val', alpha=0.6, s=50)
-    ax.set_xlabel('Loss')
-    ax.set_ylabel('Directional Accuracy')
-    ax.set_title('Loss vs Directional Accuracy')
-    ax.legend()
+    ax.scatter(train_losses, [acc*100 for acc in train_dir_accs], label='Train', alpha=0.6, s=80, color='blue')
+    ax.scatter(val_losses, [acc*100 for acc in val_dir_accs], label='Val', alpha=0.6, s=80, color='red')
+    ax.set_xlabel('Loss', fontsize=11)
+    ax.set_ylabel('Directional Accuracy (%)', fontsize=11)
+    ax.set_title('Loss vs Directional Accuracy', fontsize=12, fontweight='bold')
+    ax.legend(fontsize=10)
     ax.grid(True, alpha=0.3)
     
     # Plot 4: Summary Statistics
@@ -116,31 +114,31 @@ def plot_training_metrics(symbol, model_type='directional'):
     ax.axis('off')
     
     summary_text = f"""
-    TRAINING SUMMARY - {symbol}
-    {'='*50}
-    
-    Total Epochs Trained: {len(epochs)}
-    
-    FINAL METRICS:
-      Train Loss: {train_losses[-1]:.6f}
-      Val Loss: {val_losses[-1]:.6f}
-      
-      Train Dir Acc: {train_dir_accs[-1]*100:.2f}%
-      Val Dir Acc: {val_dir_accs[-1]*100:.2f}%
-    
-    BEST METRICS:
-      Best Val Loss: {min(val_losses):.6f} (epoch {np.argmin(val_losses)+1})
-      Best Val Dir Acc: {max(val_dir_accs)*100:.2f}% (epoch {np.argmax(val_dir_accs)+1})
-    
-    IMPROVEMENT:
-      Loss Reduction: {((train_losses[0]-train_losses[-1])/train_losses[0]*100):.1f}%
-      Dir Acc Gain: {(val_dir_accs[-1]-val_dir_accs[0])*100:.2f}pp
-    
-    STATUS:
-      Random Baseline: 33.33%
-      Current Level: {'BELOW TARGET' if val_dir_accs[-1] < 0.50 else 'GOOD' if val_dir_accs[-1] < 0.70 else 'EXCELLENT'}
-    
-    {'='*50}
+TRAINING SUMMARY - {symbol}
+{'='*50}
+
+Total Epochs Trained: {len(epochs)}
+
+FINAL METRICS:
+  Train Loss: {train_losses[-1]:.6f}
+  Val Loss: {val_losses[-1]:.6f}
+  
+  Train Dir Acc: {train_dir_accs[-1]*100:.2f}%
+  Val Dir Acc: {val_dir_accs[-1]*100:.2f}%
+
+BEST METRICS:
+  Best Val Loss: {min(val_losses):.6f} (epoch {np.argmin(val_losses)+1})
+  Best Val Dir Acc: {max(val_dir_accs)*100:.2f}% (epoch {np.argmax(val_dir_accs)+1})
+
+IMPROVEMENT:
+  Loss Reduction: {((train_losses[0]-train_losses[-1])/train_losses[0]*100):.1f}%
+  Dir Acc Gain: {(val_dir_accs[-1]-val_dir_accs[0])*100:.2f}pp
+
+STATUS:
+  Random Baseline: 33.33%
+  Current Level: {'POOR' if val_dir_accs[-1] < 0.40 else 'FAIR' if val_dir_accs[-1] < 0.50 else 'GOOD' if val_dir_accs[-1] < 0.70 else 'EXCELLENT'}
+
+{'='*50}
     """
     
     ax.text(0.1, 0.95, summary_text, transform=ax.transAxes,
@@ -155,6 +153,7 @@ def plot_training_metrics(symbol, model_type='directional'):
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
     print(f"\n[OK] Metrics saved to {output_path}")
     
+    # Show in PyCharm
     plt.show()
     
     # Print summary
@@ -169,17 +168,13 @@ def plot_training_metrics(symbol, model_type='directional'):
     
     if val_dir_accs[-1] < 0.40:
         print(f"  WARNING: Directional accuracy is LOW ({val_dir_accs[-1]*100:.2f}%)")
-        print(f"  This suggests the model is not learning direction patterns well.")
-        print(f"  Consider:")
-        print(f"    1. Increase training epochs (currently {len(epochs)})")
-        print(f"    2. Reduce learning rate")
-        print(f"    3. Check feature engineering")
+        print(f"  Consider: Increase epochs, reduce learning rate, or check features")
     elif val_dir_accs[-1] < 0.50:
         print(f"  FAIR: Model shows some directional ability ({val_dir_accs[-1]*100:.2f}%)")
-        print(f"  Continue training or adjust hyperparameters.")
+        print(f"  Recommendation: Continue training or adjust hyperparameters")
     elif val_dir_accs[-1] < 0.70:
         print(f"  GOOD: Model has decent directional accuracy ({val_dir_accs[-1]*100:.2f}%)")
-        print(f"  Ready for further optimization.")
+        print(f"  Ready for further optimization")
     else:
         print(f"  EXCELLENT: Strong directional prediction ({val_dir_accs[-1]*100:.2f}%)")
         print(f"  Model is performing very well!")
