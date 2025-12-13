@@ -29,7 +29,13 @@ $symbols = @(
 
 # Activate virtual environment
 Write-Host "Activating virtual environment..." -ForegroundColor Cyan
-.\venv\Scripts\Activate.ps1
+if (Test-Path ".venv\Scripts\Activate.ps1") {
+    . .venv\Scripts\Activate.ps1
+} elseif (Test-Path "venv\Scripts\Activate.ps1") {
+    . venv\Scripts\Activate.ps1
+} else {
+    Write-Host "Warning: Virtual environment activation script not found." -ForegroundColor Yellow
+}
 
 # Record start time
 $startTime = Get-Date
