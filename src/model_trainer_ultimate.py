@@ -303,8 +303,16 @@ class UltimateModelTrainer:
     """Ultimate trainer for maximum accuracy with overfitting prevention"""
     
     def __init__(self, device: str = None):
-        self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.scaler = torch.amp.GradScaler('cuda') if self.device.type == 'cuda' else None
+        # Properly convert device string to torch.device
+        if device is None:
+            self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        elif isinstance(device, str):
+            self.device = torch.device(device)
+        else:
+            self.device = device
+        
+        # Only create GradScaler if using CUDA
+        self.scaler = torch.amp.GradScaler() if self.device.type == 'cuda' else None
         logger.info(f"Using device: {self.device}")
     
     def prepare_data(
@@ -358,7 +366,7 @@ class UltimateModelTrainer:
         """Train ultimate ensemble with advanced optimization"""
         
         logger.info("\n" + "="*80)
-        logger.info("🚀 ULTIMATE CRYPTOCURRENCY PRICE PREDICTION TRAINER")
+        logger.info("ULTIMATE CRYPTOCURRENCY PRICE PREDICTION TRAINER")
         logger.info("="*80)
         
         # Prepare data
@@ -375,7 +383,7 @@ class UltimateModelTrainer:
         optimizer = optim.AdamW(
             ensemble_model.parameters(),
             lr=learning_rate,
-            weight_decay=1e-3,  # 🔥 10x stronger than standard
+            weight_decay=1e-3,  # 10x stronger than standard
             betas=(0.9, 0.999),
             eps=1e-8
         )
@@ -398,7 +406,7 @@ class UltimateModelTrainer:
             'learning_rate': []
         }
         
-        logger.info(f"\n📊 Training Configuration:")
+        logger.info(f"\nTraining Configuration:")
         logger.info(f"  - Model: Ultimate Ensemble (LSTM-5 + GRU-5 + Transformer-4)")
         logger.info(f"  - Hidden Size: 512 | Total Parameters: ~8.5M")
         logger.info(f"  - Dropout: 0.6 | Weight Decay (L2): 1e-3")
@@ -474,7 +482,7 @@ class UltimateModelTrainer:
             training_history['learning_rate'].append(lr)
             
             if epoch % 20 == 0:
-                status = "🟢 GOOD" if overfitting_ratio < 1.3 else "🟡 MODERATE" if overfitting_ratio < 1.6 else "🔴 HIGH"
+                status = "GOOD" if overfitting_ratio < 1.3 else "MODERATE" if overfitting_ratio < 1.6 else "HIGH"
                 logger.info(
                     f"Epoch {epoch:3d}/{epochs} | "
                     f"Train: {train_loss:.6f} | Val: {val_loss:.6f} | "
@@ -483,18 +491,18 @@ class UltimateModelTrainer:
                 )
             
             # Early stopping
-            if val_loss < best_val_loss * 0.9995:  # 只有改進 > 0.05% 才算進步
+            if val_loss < best_val_loss * 0.9995:  # Only count improvement > 0.05%
                 best_val_loss = val_loss
                 patience_counter = 0
             else:
                 patience_counter += 1
             
             if patience_counter >= patience:
-                logger.info(f"\n⏹️ Early stopping at epoch {epoch}")
+                logger.info(f"\nEarly stopping at epoch {epoch}")
                 break
         
         logger.info("\n" + "="*80)
-        logger.info(f"✅ Training completed!")
+        logger.info(f"Training completed!")
         logger.info(f"  - Best validation loss: {best_val_loss:.6f}")
         logger.info(f"  - Final overfitting ratio: {training_history['overfitting_ratio'][-1]:.3f}")
         logger.info(f"  - Target: < 1.3 (Current: {training_history['overfitting_ratio'][-1]:.3f})")
