@@ -43,8 +43,8 @@ class AdaptiveLayerNorm(nn.Module):
         return x * self.gamma + self.beta
 
 
-class MultiHeadDirectionalAttention(nn.Module):
-    """Multi-head attention with direction-aware mechanisms"""
+class MultiHeadAttention(nn.Module):
+    """Standard multi-head attention mechanism"""
     
     def __init__(self, hidden_size: int, num_heads: int = 8, dropout: float = 0.1):
         super().__init__()
@@ -52,7 +52,7 @@ class MultiHeadDirectionalAttention(nn.Module):
         self.num_heads = num_heads
         self.head_dim = hidden_size // num_heads
         
-        assert hidden_size % num_heads == 0
+        assert hidden_size % num_heads == 0, "hidden_size must be divisible by num_heads"
         
         self.scale = np.sqrt(self.head_dim)
         
@@ -60,13 +60,6 @@ class MultiHeadDirectionalAttention(nn.Module):
         self.W_q = nn.Linear(hidden_size, hidden_size)
         self.W_k = nn.Linear(hidden_size, hidden_size)
         self.W_v = nn.Linear(hidden_size, hidden_size)
-        
-        # Direction-aware attention weighting (simplified)
-        self.direction_scorer = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size // 2),
-            nn.GELU(),
-            nn.Linear(hidden_size // 2, 1)  # Single scalar per position
-        )
         
         self.fc_out = nn.Linear(hidden_size, hidden_size)
         self.dropout = nn.Dropout(dropout)
@@ -76,14 +69,12 @@ class MultiHeadDirectionalAttention(nn.Module):
         query: torch.Tensor,
         key: torch.Tensor,
         value: torch.Tensor,
-        mask: Optional[torch.Tensor] = None,
-        direction_signal: Optional[torch.Tensor] = None
+        mask: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
             query, key, value: (batch, seq_len, hidden_size)
             mask: Optional attention mask
-            direction_signal: (batch, seq_len) direction labels
         """
         batch_size = query.shape[0]
         
@@ -99,13 +90,6 @@ class MultiHeadDirectionalAttention(nn.Module):
         
         # Scaled dot-product attention
         scores = torch.matmul(Q, K.transpose(-2, -1)) / self.scale
-        
-        # Direction-aware attention boost (simplified)
-        if direction_signal is not None:
-            dir_weights = self.direction_scorer(query)  # (batch, seq_len, 1)
-            dir_weights = dir_weights.squeeze(-1)  # (batch, seq_len)
-            dir_weights = dir_weights.unsqueeze(1).unsqueeze(1)  # (batch, 1, 1, seq_len)
-            scores = scores + 0.1 * dir_weights  # Boost attention based on direction
         
         # Apply mask if provided
         if mask is not None:
@@ -159,12 +143,12 @@ class VolatilityAdaptiveFFN(nn.Module):
 
 
 class EnhancedTransformerBlock(nn.Module):
-    """Transformer block with direction awareness and volatility adaptation"""
+    """Transformer block with volatility adaptation"""
     
     def __init__(self, hidden_size: int, num_heads: int = 8, dropout: float = 0.1):
         super().__init__()
         
-        self.attention = MultiHeadDirectionalAttention(hidden_size, num_heads, dropout)
+        self.attention = MultiHeadAttention(hidden_size, num_heads, dropout)
         self.norm1 = AdaptiveLayerNorm(hidden_size)
         self.dropout1 = nn.Dropout(dropout)
         
@@ -178,8 +162,8 @@ class EnhancedTransformerBlock(nn.Module):
         volatility: Optional[torch.Tensor] = None,
         direction_signal: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
-        # Self-attention with direction awareness
-        attn_out, _ = self.attention(x, x, x, direction_signal=direction_signal)
+        # Self-attention
+        attn_out, _ = self.attention(x, x, x)
         x = x + self.dropout1(attn_out)
         x = self.norm1(x, volatility)
         
@@ -329,14 +313,6 @@ class TemporalFusionTransformerV3EnhancedOptimized(nn.Module):
         volatility = torch.std(returns, dim=1, keepdim=True) if returns.shape[1] > 0 else torch.ones(x.shape[0], 1, 1, device=x.device) * 0.01
         return volatility
     
-    def _compute_direction_signal(self, x: torch.Tensor) -> torch.Tensor:
-        """Compute direction signal from hidden representation"""
-        # x shape: (batch_size, seq_len, hidden_size)
-        signal = torch.mean(x, dim=2)  # (batch, seq_len)
-        price_diff = torch.diff(signal, dim=1, prepend=signal[:, :1])
-        direction = torch.sign(price_diff)
-        return direction
-    
     def forward(
         self,
         x: torch.Tensor,
@@ -363,13 +339,12 @@ class TemporalFusionTransformerV3EnhancedOptimized(nn.Module):
         pos_enc = self.positional_encoding[:, :seq_len, :].to(device)
         x = x + pos_enc
         
-        # Compute volatility and direction for adaptive layers (from hidden representation)
+        # Compute volatility for adaptive layers (from hidden representation)
         volatility = self._compute_volatility(x)
-        direction_signal = self._compute_direction_signal(x) if self.training else None
         
         # Apply transformer blocks with adaptive layers
         for block in self.transformer_blocks:
-            x = block(x, volatility=volatility, direction_signal=direction_signal)
+            x = block(x, volatility=volatility, direction_signal=None)
         
         # Extract last token for predictions
         x_last = x[:, -1, :]  # (batch_size, hidden_size)
