@@ -25,31 +25,18 @@ from typing import Tuple, Optional
 class TemporalEmbedding(nn.Module):
     """Encode time-based features (hour of day, day of week, etc.)"""
     
-    def __init__(self, embedding_dim: int = 32):
+    def __init__(self, input_dim: int = 8, embedding_dim: int = 32):
         super(TemporalEmbedding, self).__init__()
         self.embedding_dim = embedding_dim
         
-        # Hour of day embedding (0-23)
-        self.hour_emb = nn.Embedding(24, embedding_dim)
-        # Day of week embedding (0-6)
-        self.day_emb = nn.Embedding(7, embedding_dim)
-        # Month embedding (0-11)
-        self.month_emb = nn.Embedding(12, embedding_dim)
+        # Project to embedding dimension
+        self.linear = nn.Linear(input_dim, embedding_dim)
         
-    def forward(self, batch_size: int, seq_len: int, device: torch.device) -> torch.Tensor:
-        """Generate temporal embeddings"""
-        # Create dummy time indices (in real use, pass actual timestamps)
-        hours = torch.randint(0, 24, (batch_size, seq_len), device=device)
-        days = torch.randint(0, 7, (batch_size, seq_len), device=device)
-        months = torch.randint(0, 12, (batch_size, seq_len), device=device)
-        
-        hour_emb = self.hour_emb(hours)
-        day_emb = self.day_emb(days)
-        month_emb = self.month_emb(months)
-        
-        # Concatenate embeddings
-        temporal_emb = hour_emb + day_emb + month_emb  # (batch, seq, embedding_dim)
-        return temporal_emb
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Generate temporal embeddings from input"""
+        # x shape: (batch, seq_len, input_dim)
+        # output shape: (batch, seq_len, embedding_dim)
+        return self.linear(x)
 
 
 class MultiHeadAttention(nn.Module):
@@ -105,10 +92,10 @@ class TemporalFusionTransformer(nn.Module):
     """Temporal Fusion Transformer for price prediction
     
     Architecture:
+    - Input projection for dimension matching
     - Temporal embedding for time-based patterns
     - BiLSTM encoder for sequential context
     - Multi-head self-attention for long-range dependencies
-    - Temporal attention layer for temporal dynamics
     - Dense prediction layers
     """
     
@@ -129,11 +116,11 @@ class TemporalFusionTransformer(nn.Module):
         # Input normalization
         self.input_ln = nn.LayerNorm(input_size)
         
-        # Temporal embedding
-        self.temporal_emb = TemporalEmbedding(embedding_dim=hidden_size // 4)
-        
         # Project input to hidden size
         self.input_projection = nn.Linear(input_size, hidden_size)
+        
+        # Temporal embedding (maps input to hidden size)
+        self.temporal_emb = TemporalEmbedding(input_dim=input_size, embedding_dim=hidden_size)
         
         # BiLSTM encoder
         self.bilstm = nn.LSTM(
@@ -167,6 +154,7 @@ class TemporalFusionTransformer(nn.Module):
         # Layer normalization
         self.ln1 = nn.LayerNorm(hidden_size)
         self.ln2 = nn.LayerNorm(hidden_size)
+        self.ln3 = nn.LayerNorm(hidden_size)
         
         # Output layers
         self.output_layers = nn.Sequential(
@@ -189,30 +177,31 @@ class TemporalFusionTransformer(nn.Module):
             Predictions of shape (batch_size, output_size)
         """
         batch_size, seq_len, _ = x.shape
-        device = x.device
         
         # Input normalization
-        x = self.input_ln(x)
+        x = self.input_ln(x)  # (batch, seq, input_size)
         
         # Project to hidden size
-        x = self.input_projection(x)  # (batch, seq, hidden)
+        x_proj = self.input_projection(x)  # (batch, seq, hidden)
         
-        # Add temporal embedding
-        temporal_emb = self.temporal_emb(batch_size, seq_len, device)
-        x = x + temporal_emb  # (batch, seq, hidden)
+        # Generate temporal embeddings
+        x_temporal = self.temporal_emb(x)  # (batch, seq, hidden)
+        
+        # Add temporal embedding to projection
+        x = x_proj + x_temporal  # (batch, seq, hidden)
         
         # BiLSTM encoding
         lstm_out, (h_n, c_n) = self.bilstm(x)  # (batch, seq, hidden*2)
         lstm_out = self.bilstm_projection(lstm_out)  # (batch, seq, hidden)
-        x = x + lstm_out  # Residual connection
+        x = self.ln1(x + lstm_out)  # Residual + layer norm
         
         # Self-attention
         attn_out, _ = self.self_attention(x, x, x)  # (batch, seq, hidden)
-        x = self.ln1(x + attn_out)  # Residual + layer norm
+        x = self.ln2(x + attn_out)  # Residual + layer norm
         
         # Feed-forward network
         ffn_out = self.ffn(x)  # (batch, seq, hidden)
-        x = self.ln2(x + ffn_out)  # Residual + layer norm
+        x = self.ln3(x + ffn_out)  # Residual + layer norm
         
         # Take last time step
         last_output = x[:, -1, :]  # (batch, hidden)
