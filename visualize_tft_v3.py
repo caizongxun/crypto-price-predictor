@@ -52,6 +52,10 @@ from datetime import datetime
 setup_logging()
 logger = logging.getLogger(__name__)
 
+# Define symbols
+CHECK = "[OK]"
+CROSS = "[X]"
+
 
 class EnsembleSmoother:
     """Ensemble of smoothing techniques"""
@@ -159,7 +163,7 @@ def predict_multistep(model, X_latest, steps=5, device='cpu'):
 def visualize_tft_v3(symbol='SOL', lookback=60, predict_steps=5):
     """Enhanced V3 visualization with ensemble smoothing"""
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    logger.info(f"🚀 Using device: {device}")
+    logger.info(f"Using device: {device}")
     
     try:
         # Fetch and prepare data
@@ -204,7 +208,7 @@ def visualize_tft_v3(symbol='SOL', lookback=60, predict_steps=5):
         state_dict = torch.load(model_path, map_location=device)
         model.load_state_dict(state_dict)
         model.eval()
-        logger.info(f"✓ Model loaded")
+        logger.info(f"Model loaded")
         
         # Generate predictions
         logger.info(f"[5/8] Generating predictions...")
@@ -245,31 +249,39 @@ def visualize_tft_v3(symbol='SOL', lookback=60, predict_steps=5):
         
         # Print results
         logger.info("\n" + "="*80)
-        logger.info(f"🎯 TFT V3 MODEL PERFORMANCE - {symbol}")
+        logger.info(f"TFT V3 MODEL PERFORMANCE - {symbol}")
         logger.info("="*80)
         
-        logger.info(f"\n📊 RAW PREDICTIONS:")
+        logger.info(f"\nRAW PREDICTIONS:")
         logger.info(f"  MAE:              {metrics_raw['mae']:.4f} USD")
         logger.info(f"  MAPE:             {metrics_raw['mape']:.4f}%")
         logger.info(f"  RMSE:             {metrics_raw['rmse']:.4f} USD")
         logger.info(f"  SMAPE:            {metrics_raw['smape']:.4f}%")
-        logger.info(f"  R²:               {metrics_raw['r2']:.4f}")
+        logger.info(f"  R2:               {metrics_raw['r2']:.4f}")
         logger.info(f"  Dir. Accuracy:    {metrics_raw['dir_acc']:.2f}%")
         
-        logger.info(f"\n✨ ENSEMBLE SMOOTHED (V3):")
-        logger.info(f"  MAE:              {metrics_smooth['mae']:.4f} USD ({'\u2713' if metrics_smooth['mae'] < metrics_raw['mae'] else '\u2717'})")
-        logger.info(f"  MAPE:             {metrics_smooth['mape']:.4f}% ({'\u2713' if metrics_smooth['mape'] < metrics_raw['mape'] else '\u2717'})")
-        logger.info(f"  RMSE:             {metrics_smooth['rmse']:.4f} USD ({'\u2713' if metrics_smooth['rmse'] < metrics_raw['rmse'] else '\u2717'})")
-        logger.info(f"  SMAPE:            {metrics_smooth['smape']:.4f}% ({'\u2713' if metrics_smooth['smape'] < metrics_raw['smape'] else '\u2717'})")
-        logger.info(f"  R²:               {metrics_smooth['r2']:.4f} ({'\u2713' if metrics_smooth['r2'] > metrics_raw['r2'] else '\u2717'})")
-        logger.info(f"  Dir. Accuracy:    {metrics_smooth['dir_acc']:.2f}% ({'\u2713' if metrics_smooth['dir_acc'] > metrics_raw['dir_acc'] else '\u2717'})")
+        # Create improvement symbols
+        mae_symbol = CHECK if metrics_smooth['mae'] < metrics_raw['mae'] else CROSS
+        mape_symbol = CHECK if metrics_smooth['mape'] < metrics_raw['mape'] else CROSS
+        rmse_symbol = CHECK if metrics_smooth['rmse'] < metrics_raw['rmse'] else CROSS
+        smape_symbol = CHECK if metrics_smooth['smape'] < metrics_raw['smape'] else CROSS
+        r2_symbol = CHECK if metrics_smooth['r2'] > metrics_raw['r2'] else CROSS
+        dir_acc_symbol = CHECK if metrics_smooth['dir_acc'] > metrics_raw['dir_acc'] else CROSS
+        
+        logger.info(f"\nENSEMBLE SMOOTHED (V3):")
+        logger.info(f"  MAE:              {metrics_smooth['mae']:.4f} USD {mae_symbol}")
+        logger.info(f"  MAPE:             {metrics_smooth['mape']:.4f}% {mape_symbol}")
+        logger.info(f"  RMSE:             {metrics_smooth['rmse']:.4f} USD {rmse_symbol}")
+        logger.info(f"  SMAPE:            {metrics_smooth['smape']:.4f}% {smape_symbol}")
+        logger.info(f"  R2:               {metrics_smooth['r2']:.4f} {r2_symbol}")
+        logger.info(f"  Dir. Accuracy:    {metrics_smooth['dir_acc']:.2f}% {dir_acc_symbol}")
         
         if metrics_smooth['mae_high_vol'] and metrics_smooth['mae_low_vol']:
-            logger.info(f"\n📈 VOLATILITY-ADJUSTED ACCURACY:")
+            logger.info(f"\nVOLATILITY-ADJUSTED ACCURACY:")
             logger.info(f"  High Vol MAE:     {metrics_smooth['mae_high_vol']:.4f} USD")
             logger.info(f"  Low Vol MAE:      {metrics_smooth['mae_low_vol']:.4f} USD")
         
-        logger.info(f"\n📊 MULTI-STEP FORECAST ({predict_steps} Candles):")
+        logger.info(f"\nMULTI-STEP FORECAST ({predict_steps} Candles):")
         logger.info(f"  Current Price: {y_true[-1]:.4f} USD")
         for i, price in enumerate(future_inverse, 1):
             change = ((price - y_true[-1]) / y_true[-1]) * 100
@@ -278,7 +290,7 @@ def visualize_tft_v3(symbol='SOL', lookback=60, predict_steps=5):
         logger.info("="*80)
         
         # Visualization
-        logger.info(f"\n📈 Generating advanced visualizations...")
+        logger.info(f"\nGenerating advanced visualizations...")
         fig = plt.figure(figsize=(22, 16))
         
         # Plot 1: Price comparison with ensemble smoothing
@@ -331,7 +343,7 @@ def visualize_tft_v3(symbol='SOL', lookback=60, predict_steps=5):
         max_v = max(y_true.max(), y_pred_ensemble.max())
         ax3.plot([min_v, max_v], [min_v, max_v], 'r--', linewidth=2.5, label='Perfect')
         
-        ax3.set_title(f'Actual vs Predicted\nR²: {metrics_smooth["r2"]:.4f}',
+        ax3.set_title(f'Actual vs Predicted\nR2: {metrics_smooth["r2"]:.4f}',
                      fontsize=12, fontweight='bold')
         ax3.set_xlabel('Actual (USD)')
         ax3.set_ylabel('Predicted (USD)')
@@ -420,7 +432,7 @@ def visualize_tft_v3(symbol='SOL', lookback=60, predict_steps=5):
             ((metrics_smooth['dir_acc'] - metrics_raw['dir_acc']) / metrics_raw['dir_acc'] * 100),
         ]
         
-        improvement_names = ['MAE', 'MAPE', 'R²', 'Dir. Acc']
+        improvement_names = ['MAE', 'MAPE', 'R2', 'Dir. Acc']
         colors = ['green' if x > 0 else 'red' for x in improvements]
         ax8.barh(improvement_names, improvements, color=colors, alpha=0.7)
         ax8.axvline(0, color='black', linestyle='-', linewidth=0.8)
@@ -435,20 +447,20 @@ def visualize_tft_v3(symbol='SOL', lookback=60, predict_steps=5):
         
         summary = f"""TFT V3 PERFORMANCE SUMMARY
 
-📈 Key Metrics:
+Key Metrics:
   MAE: {metrics_smooth['mae']:.4f} USD
   MAPE: {metrics_smooth['mape']:.2f}%
-  R²: {metrics_smooth['r2']:.4f}
+  R2: {metrics_smooth['r2']:.4f}
   Dir. Acc: {metrics_smooth['dir_acc']:.1f}%
 
-🚀 Improvements (vs V2):
-  MAE: {((6.6739 - metrics_smooth['mae']) / 6.6739 * 100):.1f}% ↓
-  MAPE: {((4.55 - metrics_smooth['mape']) / 4.55 * 100):.1f}% ↓
+Improvements (vs V2):
+  MAE: {((6.6739 - metrics_smooth['mae']) / 6.6739 * 100):.1f}% down
+  MAPE: {((4.55 - metrics_smooth['mape']) / 4.55 * 100):.1f}% down
 
-📈 Data:
+Data:
   Samples: {len(y_true):,}
   Price Range: ${y_true.min():.2f}-${y_true.max():.2f}
-  Volatility: {volatility.mean():.4f} ± {volatility.std():.4f}
+  Volatility: {volatility.mean():.4f} +/- {volatility.std():.4f}
 """
         
         ax9.text(0.05, 0.95, summary, transform=ax9.transAxes, fontsize=10,
@@ -463,7 +475,7 @@ def visualize_tft_v3(symbol='SOL', lookback=60, predict_steps=5):
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         save_path = os.path.join(output_dir, f'{symbol}_tft_v3_analysis_{timestamp}.png')
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
-        logger.info(f"\n💾 Plot saved: {save_path}")
+        logger.info(f"\nPlot saved: {save_path}")
         
         plt.show()
         
@@ -479,5 +491,5 @@ if __name__ == "__main__":
     parser.add_argument('--steps', type=int, default=5)
     args = parser.parse_args()
     
-    logger.info(f"\n🚀 TFT V3 Visualization: {args.symbol}...\n")
+    logger.info(f"\nTFT V3 Visualization: {args.symbol}...\n")
     visualize_tft_v3(args.symbol, args.lookback, args.steps)
