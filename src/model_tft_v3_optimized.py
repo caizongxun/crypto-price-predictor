@@ -304,15 +304,18 @@ class TemporalFusionTransformerV3Optimized(nn.Module):
         return price_pred
 
 
-class DirectionalLossV2(nn.Module):
-    """Enhanced directional loss function"""
+class DirectionalLossV3(nn.Module):
+    """Enhanced directional loss - MORE FOCUS ON DIRECTION"""
     
-    def __init__(self, direction_weight: float = 0.5, trend_weight: float = 0.3):
+    def __init__(self, direction_weight: float = 2.0):
         super().__init__()
-        self.direction_weight = direction_weight
-        self.trend_weight = trend_weight
+        self.direction_weight = direction_weight  # Increased from 0.5
         self.mse_loss = nn.MSELoss()
-        self.direction_loss = nn.CrossEntropyLoss()
+        
+        # Weighted cross-entropy for imbalanced classes
+        # Down=0, Neutral=1, Up=2
+        class_weights = torch.tensor([1.0, 0.5, 1.0])  # Less weight for neutral
+        self.direction_loss = nn.CrossEntropyLoss(weight=class_weights, reduction='mean')
     
     def forward(
         self,
@@ -322,7 +325,7 @@ class DirectionalLossV2(nn.Module):
         direction_target: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         """
-        Compute combined loss
+        Compute combined loss - heavily weighted toward direction
         
         Args:
             price_pred: (batch_size, 1) predicted prices
@@ -330,17 +333,18 @@ class DirectionalLossV2(nn.Module):
             direction_logits: (batch_size, 3) direction classification logits
             direction_target: (batch_size,) direction targets {0=down, 1=neutral, 2=up}
         """
-        # Base regression loss
-        mse = self.mse_loss(price_pred, price_target)
+        # Normalize price loss for scale independence
+        price_std = price_target.std() + 1e-8
+        mse = self.mse_loss(price_pred / price_std, price_target / price_std)
         
-        # Direction prediction loss
+        # Direction prediction loss - MAIN FOCUS
         if direction_logits is not None and direction_target is not None:
             dir_loss = self.direction_loss(direction_logits, direction_target)
-            return mse + self.direction_weight * dir_loss
-        
-        # Penalty for wrong direction
-        price_direction_pred = torch.sign(price_pred - price_target)
-        # This encourages the model to at least predict the right direction
+            
+            # Heavy weighting toward direction
+            total_loss = mse + self.direction_weight * dir_loss
+            
+            return total_loss
         
         return mse
 
