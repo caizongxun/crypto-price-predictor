@@ -320,17 +320,19 @@ class TemporalFusionTransformerV3EnhancedOptimized(nn.Module):
         return pe.unsqueeze(0)
     
     def _compute_volatility(self, x: torch.Tensor) -> torch.Tensor:
-        """Compute sequence volatility for adaptive layers"""
-        # Assuming first feature is close price
-        close_prices = x[..., 0]
-        returns = torch.diff(close_prices, dim=1)
-        volatility = torch.std(returns, dim=1, keepdim=True)
+        """Compute sequence volatility for adaptive layers from hidden representation"""
+        # x shape: (batch_size, seq_len, hidden_size)
+        # Use mean across all features as signal
+        signal = torch.mean(x, dim=2, keepdim=True)  # (batch, seq_len, 1)
+        returns = torch.diff(signal, dim=1)
+        volatility = torch.std(returns, dim=1, keepdim=True) if returns.shape[1] > 0 else torch.ones(x.shape[0], 1, 1, device=x.device) * 0.01
         return volatility
     
     def _compute_direction_signal(self, x: torch.Tensor) -> torch.Tensor:
-        """Compute direction signal from price sequence"""
-        close_prices = x[..., 0]
-        price_diff = torch.diff(close_prices, dim=1, prepend=close_prices[:, :1])
+        """Compute direction signal from hidden representation"""
+        # x shape: (batch_size, seq_len, hidden_size)
+        signal = torch.mean(x, dim=2)  # (batch, seq_len)
+        price_diff = torch.diff(signal, dim=1, prepend=signal[:, :1])
         direction = torch.sign(price_diff)
         return direction
     
@@ -360,7 +362,7 @@ class TemporalFusionTransformerV3EnhancedOptimized(nn.Module):
         pos_enc = self.positional_encoding[:, :seq_len, :].to(device)
         x = x + pos_enc
         
-        # Compute volatility and direction for adaptive layers
+        # Compute volatility and direction for adaptive layers (from hidden representation)
         volatility = self._compute_volatility(x)
         direction_signal = self._compute_direction_signal(x) if self.training else None
         
