@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
 """
 Ultimate Cryptocurrency Price Prediction Model Trainer
-Designed for maximum accuracy with robust overfitting prevention
+Optimized for better generalization with 10,000 candles and simplified features
+
+🔧 KEY CHANGES IN THIS VERSION:
+- Dropout: 0.6 → 0.3 (allow deeper learning, less regularization)
+- Features: Simplified to 20 (removed complex indicators)
+- Data: 10,000 candles (4x more data for better pattern learning)
+- L2: Kept at 1e-3 (stable regularization)
 
 Key Features:
 - Advanced ensemble fusion (LSTM + GRU + Transformer + Attention)
 - Multi-loss optimization (MAE + Huber + L1)
 - Deep architecture (5 layers, hidden_size 512)
-- Aggressive regularization (dropout 0.6, weight_decay 1e-3)
+- Balanced regularization (dropout 0.3, weight_decay 1e-3)
 - K-fold cross-validation support
 - Learning rate warmup + cosine annealing
 - Gradient accumulation for stable training
@@ -32,8 +38,8 @@ logger = logging.getLogger(__name__)
 
 
 class UltimateLSTMModel(nn.Module):
-    """Ultra-deep LSTM with aggressive regularization for maximum accuracy"""
-    def __init__(self, input_size: int, hidden_size: int = 512, num_layers: int = 5, dropout: float = 0.6):
+    """Deep LSTM with balanced regularization for robust predictions"""
+    def __init__(self, input_size: int, hidden_size: int = 512, num_layers: int = 5, dropout: float = 0.3):
         super(UltimateLSTMModel, self).__init__()
         self.hidden_size = hidden_size
         self.num_layers = num_layers
@@ -42,7 +48,7 @@ class UltimateLSTMModel(nn.Module):
         self.input_ln = nn.LayerNorm(input_size)
         self.input_proj = nn.Linear(input_size, hidden_size)
         
-        # Ultra-deep bidirectional LSTM with aggressive dropout
+        # Deep bidirectional LSTM with moderate dropout
         self.lstm = nn.LSTM(
             hidden_size,
             hidden_size,
@@ -55,7 +61,7 @@ class UltimateLSTMModel(nn.Module):
         # Advanced normalization
         self.layer_norm = nn.LayerNorm(hidden_size * 2)
         
-        # Multi-head attention with high dropout
+        # Multi-head attention
         self.attention = nn.MultiheadAttention(
             hidden_size * 2,
             num_heads=16,
@@ -66,30 +72,30 @@ class UltimateLSTMModel(nn.Module):
         # Residual connection
         self.residual = nn.Linear(hidden_size * 2, hidden_size * 2)
         
-        # Dense layers with extreme regularization
+        # Dense layers with balanced dropout
         self.fc = nn.Sequential(
             nn.Linear(hidden_size * 2, 1024),
             nn.BatchNorm1d(1024),
             nn.ReLU(),
-            nn.Dropout(dropout),
+            nn.Dropout(0.3),
             
             nn.Linear(1024, 512),
             nn.BatchNorm1d(512),
             nn.ReLU(),
-            nn.Dropout(dropout),
+            nn.Dropout(0.25),
             
             nn.Linear(512, 256),
             nn.BatchNorm1d(256),
             nn.ReLU(),
-            nn.Dropout(0.5),
+            nn.Dropout(0.2),
             
             nn.Linear(256, 128),
             nn.ReLU(),
-            nn.Dropout(0.4),
+            nn.Dropout(0.15),
             
             nn.Linear(128, 64),
             nn.ReLU(),
-            nn.Dropout(0.3),
+            nn.Dropout(0.1),
             
             nn.Linear(64, 1)
         )
@@ -118,8 +124,8 @@ class UltimateLSTMModel(nn.Module):
 
 
 class UltimateGRUModel(nn.Module):
-    """Ultra-deep GRU with aggressive regularization"""
-    def __init__(self, input_size: int, hidden_size: int = 512, num_layers: int = 5, dropout: float = 0.6):
+    """Deep GRU with balanced regularization"""
+    def __init__(self, input_size: int, hidden_size: int = 512, num_layers: int = 5, dropout: float = 0.3):
         super(UltimateGRUModel, self).__init__()
         
         self.input_ln = nn.LayerNorm(input_size)
@@ -141,25 +147,25 @@ class UltimateGRUModel(nn.Module):
             nn.Linear(hidden_size * 2, 1024),
             nn.BatchNorm1d(1024),
             nn.ReLU(),
-            nn.Dropout(dropout),
+            nn.Dropout(0.3),
             
             nn.Linear(1024, 512),
             nn.BatchNorm1d(512),
             nn.ReLU(),
-            nn.Dropout(dropout),
+            nn.Dropout(0.25),
             
             nn.Linear(512, 256),
             nn.BatchNorm1d(256),
             nn.ReLU(),
-            nn.Dropout(0.5),
+            nn.Dropout(0.2),
             
             nn.Linear(256, 128),
             nn.ReLU(),
-            nn.Dropout(0.4),
+            nn.Dropout(0.15),
             
             nn.Linear(128, 64),
             nn.ReLU(),
-            nn.Dropout(0.3),
+            nn.Dropout(0.1),
             
             nn.Linear(64, 1)
         )
@@ -180,8 +186,8 @@ class UltimateGRUModel(nn.Module):
 
 
 class UltimateTransformerModel(nn.Module):
-    """Ultra-deep Transformer with aggressive regularization"""
-    def __init__(self, input_size: int, hidden_size: int = 512, num_layers: int = 4, dropout: float = 0.6):
+    """Deep Transformer with balanced regularization"""
+    def __init__(self, input_size: int, hidden_size: int = 512, num_layers: int = 4, dropout: float = 0.3):
         super(UltimateTransformerModel, self).__init__()
         
         self.input_projection = nn.Linear(input_size, hidden_size)
@@ -201,10 +207,10 @@ class UltimateTransformerModel(nn.Module):
             nn.Linear(hidden_size, 512),
             nn.BatchNorm1d(512),
             nn.ReLU(),
-            nn.Dropout(0.5),
+            nn.Dropout(0.25),
             nn.Linear(512, 256),
             nn.ReLU(),
-            nn.Dropout(0.4),
+            nn.Dropout(0.2),
             nn.Linear(256, 1)
         )
     
@@ -218,7 +224,7 @@ class UltimateTransformerModel(nn.Module):
 
 
 class UltimateEnsembleModel(nn.Module):
-    """Ultimate ensemble - fusion of 3 ultra-deep models with attention fusion"""
+    """Ultimate ensemble - fusion of 3 deep models with attention fusion"""
     def __init__(self, lstm_model, gru_model, transformer_model):
         super(UltimateEnsembleModel, self).__init__()
         self.lstm_model = lstm_model
@@ -229,7 +235,7 @@ class UltimateEnsembleModel(nn.Module):
         self.fusion_attention = nn.MultiheadAttention(
             embed_dim=3,
             num_heads=3,
-            dropout=0.3,
+            dropout=0.2,
             batch_first=True
         )
         
@@ -237,13 +243,13 @@ class UltimateEnsembleModel(nn.Module):
             nn.Linear(3, 256),
             nn.BatchNorm1d(256),
             nn.ReLU(),
-            nn.Dropout(0.4),
+            nn.Dropout(0.2),
             nn.Linear(256, 128),
             nn.ReLU(),
-            nn.Dropout(0.3),
+            nn.Dropout(0.15),
             nn.Linear(128, 64),
             nn.ReLU(),
-            nn.Dropout(0.2),
+            nn.Dropout(0.1),
             nn.Linear(64, 1)
         )
     
@@ -303,7 +309,7 @@ class WarmupCosineScheduler:
 
 
 class UltimateModelTrainer:
-    """Ultimate trainer for maximum accuracy with overfitting prevention"""
+    """Ultimate trainer for maximum accuracy with balanced regularization"""
     
     def __init__(self, device: str = None):
         # Properly convert device string to torch.device
@@ -389,27 +395,27 @@ class UltimateModelTrainer:
         learning_rate: float = 0.0001,
         accumulation_steps: int = 2
     ) -> Tuple[UltimateEnsembleModel, dict]:
-        """Train ultimate ensemble with advanced optimization"""
+        """Train ultimate ensemble with optimized parameters"""
         
         logger.info("\n" + "="*80)
-        logger.info("ULTIMATE CRYPTOCURRENCY PRICE PREDICTION TRAINER")
+        logger.info("🚀 ULTIMATE CRYPTOCURRENCY PRICE PREDICTION TRAINER")
         logger.info("="*80)
         
         # Prepare data
         train_loader, test_loader, scalers = self.prepare_data(X, y, batch_size=batch_size)
         
-        # Initialize ultra-deep models
+        # Initialize deep models with dropout=0.3
         input_size = X.shape[-1]
-        lstm_model = UltimateLSTMModel(input_size).to(self.device)
-        gru_model = UltimateGRUModel(input_size).to(self.device)
-        transformer_model = UltimateTransformerModel(input_size).to(self.device)
+        lstm_model = UltimateLSTMModel(input_size, dropout=0.3).to(self.device)
+        gru_model = UltimateGRUModel(input_size, dropout=0.3).to(self.device)
+        transformer_model = UltimateTransformerModel(input_size, dropout=0.3).to(self.device)
         ensemble_model = UltimateEnsembleModel(lstm_model, gru_model, transformer_model).to(self.device)
         
-        # Advanced optimizer with aggressive regularization
+        # Advanced optimizer with balanced regularization
         optimizer = optim.AdamW(
             ensemble_model.parameters(),
             lr=learning_rate,
-            weight_decay=1e-3,  # 10x stronger than standard
+            weight_decay=1e-3,  # L2 regularization
             betas=(0.9, 0.999),
             eps=1e-8
         )
@@ -432,14 +438,16 @@ class UltimateModelTrainer:
             'learning_rate': []
         }
         
-        logger.info(f"\nTraining Configuration:")
+        logger.info(f"\n📊 Training Configuration:")
         logger.info(f"  - Model: Ultimate Ensemble (LSTM-5 + GRU-5 + Transformer-4)")
         logger.info(f"  - Hidden Size: 512 | Total Parameters: ~8.5M")
-        logger.info(f"  - Dropout: 0.6 | Weight Decay (L2): 1e-3")
+        logger.info(f"  - Dropout: 0.3 (reduced from 0.6 for deeper learning)")
+        logger.info(f"  - Weight Decay (L2): 1e-3")
         logger.info(f"  - Loss Function: Multi-Loss (MAE 50% + Huber 30% + L1 20%)")
         logger.info(f"  - Optimizer: AdamW with Warmup + Cosine Annealing")
         logger.info(f"  - Batch Size: {batch_size} | Gradient Accumulation: {accumulation_steps}")
         logger.info(f"  - Epochs: {epochs} | Early Stopping Patience: {patience}")
+        logger.info(f"  - Data: {len(train_loader)} training batches | {len(test_loader)} validation batches")
         logger.info("\n" + "="*80)
         
         # Backup old model before training
@@ -511,7 +519,7 @@ class UltimateModelTrainer:
             training_history['learning_rate'].append(lr)
             
             if epoch % 20 == 0:
-                status = "GOOD" if overfitting_ratio < 1.3 else "MODERATE" if overfitting_ratio < 1.6 else "HIGH"
+                status = "✓ GOOD" if overfitting_ratio < 1.3 else "⚠ MODERATE" if overfitting_ratio < 1.6 else "⚠ HIGH"
                 logger.info(
                     f"Epoch {epoch:3d}/{epochs} | "
                     f"Train: {train_loss:.6f} | Val: {val_loss:.6f} | "
@@ -535,11 +543,16 @@ class UltimateModelTrainer:
                 break
         
         logger.info("\n" + "="*80)
-        logger.info(f"Training completed!")
+        logger.info("✅ Training completed!")
         logger.info(f"  - Best validation loss: {best_val_loss:.6f}")
         logger.info(f"  - Final overfitting ratio: {training_history['overfitting_ratio'][-1]:.3f}")
         logger.info(f"  - Model saved to: models/saved_models/{symbol}_model.pth")
         logger.info(f"  - Old model backed up to: models/saved_models_backup/")
+        logger.info("\n🎯 Expected Improvements with this version:")
+        logger.info(f"  - Dropout reduction (0.6→0.3) allows deeper pattern learning")
+        logger.info(f"  - 4x more data (10,000 candles) for better generalization")
+        logger.info(f"  - Simplified features (20 vs 40) reduce noise and dimensionality")
+        logger.info(f"  - Target: Reduce MAE from 0.36 → 0.20-0.25")
         logger.info("="*80 + "\n")
         
         return ensemble_model, training_history
