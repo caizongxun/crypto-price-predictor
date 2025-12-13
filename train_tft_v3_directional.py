@@ -6,7 +6,7 @@
 
 1. Dual-Head Architecture
    - Price regression head (MSE loss)
-   - Direction classification head (Cross-entropy loss)
+   - Direction classification head (Cross-entropy loss with class weighting)
    - Shared transformer encoder learns better features
 
 2. Direction-Aware Attention
@@ -14,10 +14,10 @@
    - Direction gating in feed-forward network
    - Helps model understand trend changes
 
-3. Combined Loss Function
-   - Primary: Price prediction (MSE)
-   - Secondary: Direction classification (CE)
-   - Weighted sum balances both objectives
+3. IMPROVED Loss Function (V3)
+   - Heavy weighting on direction (weight=2.0)
+   - Class-weighted CE loss (penalize wrong direction prediction more)
+   - Scale-normalized price loss
 
 4. Enhanced Features
    - Momentum (rate of change)
@@ -26,7 +26,7 @@
    - Volatility-adjusted returns
 
 📊 Expected Results:
-- Directional Accuracy: 70-80%
+- Directional Accuracy: 50-65%
 - Better trend following
 - More stable predictions
 """
@@ -52,7 +52,7 @@ from src.utils import setup_logging, create_directories
 from src.data_fetcher_tft_v3 import TFTDataFetcher
 from src.model_tft_v3_optimized import (
     TemporalFusionTransformerV3Optimized,
-    DirectionalLossV2,
+    DirectionalLossV3,
     DirectionalAccuracyMetric
 )
 import torch.optim as optim
@@ -82,9 +82,8 @@ class TFTDirectionalTrainer:
         # Compute price changes
         price_changes = np.diff(y, prepend=y[0])
         
-        # Classify
-        # Using threshold to avoid noise
-        threshold = np.std(price_changes) * 0.1
+        # Classify with smaller threshold for better distinction
+        threshold = np.std(price_changes) * 0.05  # Reduced from 0.1
         
         directions[price_changes > threshold] = 2   # Up
         directions[price_changes < -threshold] = 0  # Down
@@ -182,7 +181,7 @@ class TFTDirectionalTrainer:
     ):
         """Complete training pipeline with direction optimization"""
         logger.info("\n" + "="*80)
-        logger.info("TFT V3 DIRECTIONAL TRAINING")
+        logger.info("TFT V3 DIRECTIONAL TRAINING (IMPROVED)")
         logger.info("="*80)
         
         # Compute direction targets
@@ -222,12 +221,12 @@ class TFTDirectionalTrainer:
         optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=0.001)
         scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2, eta_min=1e-6)
         
-        # Weighted loss: balance price and direction
-        loss_fn = DirectionalLossV2(direction_weight=0.5)
+        # Use improved loss function with heavier direction weighting
+        loss_fn = DirectionalLossV3(direction_weight=2.0)  # Increased from 0.5
         
         logger.info(f"  Optimizer: AdamW (lr={learning_rate})")
-        logger.info(f"  Loss: Combined (MSE + Direction Classification)")
-        logger.info(f"  Direction Weight: 0.5")
+        logger.info(f"  Loss: Combined (Normalized MSE + Weighted Direction CE)")
+        logger.info(f"  Direction Weight: 2.0 (INCREASED for better direction learning)")
         
         # Training loop
         logger.info(f"\n[5/6] Training for {epochs} epochs...\n")
@@ -251,11 +250,12 @@ class TFTDirectionalTrainer:
             history['train_dir_acc'].append(train_dir_acc)
             history['val_dir_acc'].append(val_dir_acc)
             
-            # Early stopping
-            if val_loss < self.best_val_loss:
-                self.best_val_loss = val_loss
-                self.patience_counter = 0
-                best_model_state = model.state_dict().copy()
+            # Early stopping (track best dir acc instead of loss)
+            if val_dir_acc > (self.best_val_loss - 0.5):  # Use dir acc as primary metric
+                if val_loss < self.best_val_loss or val_dir_acc > max(history['val_dir_acc'][:-1]) if len(history['val_dir_acc']) > 1 else True:
+                    self.best_val_loss = max(val_dir_acc, self.best_val_loss - 0.5)
+                    self.patience_counter = 0
+                    best_model_state = model.state_dict().copy()
             else:
                 self.patience_counter += 1
             
@@ -264,7 +264,7 @@ class TFTDirectionalTrainer:
                           f"Loss: {train_loss:.6f}/{val_loss:.6f} | "
                           f"Dir Acc: {train_dir_acc:.2%}/{val_dir_acc:.2%}")
             
-            if self.patience_counter >= 25:
+            if self.patience_counter >= 30:
                 logger.warning(f"Early stopping at epoch {epoch+1}")
                 break
         
@@ -286,10 +286,17 @@ class TFTDirectionalTrainer:
         logger.info(f"TRAINING SUMMARY - {symbol}")
         logger.info("="*80)
         logger.info(f"\nMetrics:")
-        logger.info(f"  Best Val Loss: {self.best_val_loss:.6f}")
+        logger.info(f"  Best Val Loss: {min(history['val_loss']):.6f}")
         logger.info(f"  Best Val Dir Acc: {max(history['val_dir_acc']):.2%}")
         logger.info(f"  Final Train Dir Acc: {history['train_dir_acc'][-1]:.2%}")
         logger.info(f"  Final Val Dir Acc: {history['val_dir_acc'][-1]:.2%}")
+        logger.info(f"\nAnalysis:")
+        if max(history['val_dir_acc']) > 0.50:
+            logger.info(f"  GOOD - Model is learning directional patterns")
+        elif max(history['val_dir_acc']) > 0.40:
+            logger.info(f"  FAIR - Some learning happening, but room for improvement")
+        else:
+            logger.info(f"  POOR - Model is struggling, check features and hyperparameters")
         logger.info("="*80 + "\n")
         
         return model, history
