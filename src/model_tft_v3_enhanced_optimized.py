@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-🚀 TFT V3 Enhanced Optimized v1.2 - Advanced Price & Directional Prediction
+🚀 TFT V3 Enhanced Optimized v1.3 - STABLE VERSION
 
 Major Optimizations:
 1. **Adaptive Forecasting Head** - Predicts 3-5 candles ahead with confidence
@@ -44,7 +44,7 @@ class AdaptiveLayerNorm(nn.Module):
 
 
 class MultiHeadAttention(nn.Module):
-    """Standard multi-head attention mechanism"""
+    """Standard multi-head attention mechanism - SIMPLIFIED VERSION"""
     
     def __init__(self, hidden_size: int, num_heads: int = 8, dropout: float = 0.1):
         super().__init__()
@@ -73,65 +73,59 @@ class MultiHeadAttention(nn.Module):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
-            query, key, value: (batch, seq_len, hidden_size) or (batch, hidden_size)
+            query, key, value: (batch, seq_len, hidden_size)
             mask: Optional attention mask
         
         Returns:
-            output: Same shape as input query
+            output: (batch, seq_len, hidden_size)
             attention: attention weights
         """
-        # Store original dimensions for output shape
-        original_dim = query.dim()
+        # Validate input shape - MUST BE 3D
+        if query.dim() != 3 or key.dim() != 3 or value.dim() != 3:
+            raise ValueError(
+                f"Expected 3D tensors, got query: {query.shape}, "
+                f"key: {key.shape}, value: {value.shape}"
+            )
         
-        # Handle both 2D and 3D inputs
-        if query.dim() == 2:
-            # (batch, hidden_size) -> add seq_len=1
-            query = query.unsqueeze(1)
-            key = key.unsqueeze(1)
-            value = value.unsqueeze(1)
+        batch_size, seq_len, hidden_size = query.shape
         
-        if query.dim() != 3:
-            raise ValueError(f"Expected query to be 2D or 3D, got {query.dim()}D with shape {query.shape}")
-        
-        batch_size, seq_len, _ = query.shape
-        
-        # Linear projections (keep as 3D: batch, seq_len, hidden)
+        # Linear projections - stay 3D
         Q = self.W_q(query)  # (batch, seq_len, hidden)
-        K = self.W_k(key)
-        V = self.W_v(value)
+        K = self.W_k(key)    # (batch, seq_len, hidden)
+        V = self.W_v(value)  # (batch, seq_len, hidden)
         
-        # Reshape for multi-head attention
-        # (batch, seq_len, hidden) -> (batch, seq_len, num_heads, head_dim) -> (batch, num_heads, seq_len, head_dim)
-        Q = Q.reshape(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-        K = K.reshape(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-        V = V.reshape(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+        # Split into heads: (batch, seq_len, hidden) -> (batch, seq_len, num_heads, head_dim)
+        Q = Q.view(batch_size, seq_len, self.num_heads, self.head_dim)
+        K = K.view(batch_size, seq_len, self.num_heads, self.head_dim)
+        V = V.view(batch_size, seq_len, self.num_heads, self.head_dim)
         
-        # Now Q, K, V are (batch, num_heads, seq_len, head_dim)
+        # Permute to (batch, num_heads, seq_len, head_dim)
+        Q = Q.permute(0, 2, 1, 3).contiguous()
+        K = K.permute(0, 2, 1, 3).contiguous()
+        V = V.permute(0, 2, 1, 3).contiguous()
         
-        # Scaled dot-product attention
-        scores = torch.matmul(Q, K.transpose(-2, -1)) / self.scale  # (batch, num_heads, seq_len, seq_len)
+        # Attention scores: (batch, num_heads, seq_len, seq_len)
+        scores = torch.matmul(Q, K.transpose(-2, -1)) / self.scale
         
         # Apply mask if provided
         if mask is not None:
             scores = scores.masked_fill(mask == 0, float('-inf'))
         
-        # Softmax and dropout
+        # Softmax
         attention = F.softmax(scores, dim=-1)
         attention = self.dropout(attention)
         
-        # Apply attention to values
-        context = torch.matmul(attention, V)  # (batch, num_heads, seq_len, head_dim)
+        # Context: (batch, num_heads, seq_len, head_dim)
+        context = torch.matmul(attention, V)
         
-        # Transpose and reshape back to (batch, seq_len, hidden_size)
-        context = context.transpose(1, 2).contiguous()  # (batch, seq_len, num_heads, head_dim)
-        context = context.reshape(batch_size, seq_len, self.hidden_size)  # (batch, seq_len, hidden)
+        # Combine heads: (batch, num_heads, seq_len, head_dim) -> (batch, seq_len, num_heads, head_dim)
+        context = context.permute(0, 2, 1, 3).contiguous()
         
-        # Final linear projection
-        output = self.fc_out(context)  # (batch, seq_len, hidden)
+        # Reshape to 3D: (batch, seq_len, hidden)
+        context = context.view(batch_size, seq_len, hidden_size)
         
-        # Handle original 2D input: squeeze if input was 2D
-        if original_dim == 2:
-            output = output.squeeze(1)  # (batch, hidden)
+        # Final projection
+        output = self.fc_out(context)
         
         return output, attention
 
