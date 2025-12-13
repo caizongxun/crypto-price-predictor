@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-🎯 TFT Training V3 Directional - Optimized for Direction Prediction
+🏃 TFT Training V3 Directional - Optimized for Direction Prediction
 
 ✨ Key Improvements for Directional Accuracy:
 
@@ -77,7 +77,7 @@ class TFTDirectionalTrainer:
         Compute direction targets from price sequence
         Returns: {0: down, 1: neutral, 2: up}
         """
-        directions = np.zeros(len(y), dtype=np.long)
+        directions = np.zeros(len(y), dtype=np.int64)
         
         # Compute price changes
         price_changes = np.diff(y, prepend=y[0])
