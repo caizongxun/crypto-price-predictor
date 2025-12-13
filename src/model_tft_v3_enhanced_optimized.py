@@ -75,21 +75,30 @@ class MultiHeadAttention(nn.Module):
         Args:
             query, key, value: (batch, seq_len, hidden_size)
             mask: Optional attention mask
+        
+        Returns:
+            output: (batch, seq_len, hidden_size)
+            attention: attention weights
         """
-        batch_size = query.shape[0]
+        batch_size, seq_len, _ = query.shape
         
         # Linear projections
         Q = self.W_q(query)  # (batch, seq_len, hidden)
         K = self.W_k(key)
         V = self.W_v(value)
         
-        # Reshape for multi-head attention
-        Q = Q.view(batch_size, -1, self.num_heads, self.head_dim).transpose(1, 2)
-        K = K.view(batch_size, -1, self.num_heads, self.head_dim).transpose(1, 2)
-        V = V.view(batch_size, -1, self.num_heads, self.head_dim).transpose(1, 2)
+        # Reshape for multi-head attention: (batch, seq_len, hidden) -> (batch, seq_len, num_heads, head_dim)
+        Q = Q.view(batch_size, seq_len, self.num_heads, self.head_dim)
+        K = K.view(batch_size, seq_len, self.num_heads, self.head_dim)
+        V = V.view(batch_size, seq_len, self.num_heads, self.head_dim)
+        
+        # Transpose to (batch, num_heads, seq_len, head_dim)
+        Q = Q.transpose(1, 2)
+        K = K.transpose(1, 2)
+        V = V.transpose(1, 2)
         
         # Scaled dot-product attention
-        scores = torch.matmul(Q, K.transpose(-2, -1)) / self.scale
+        scores = torch.matmul(Q, K.transpose(-2, -1)) / self.scale  # (batch, num_heads, seq_len, seq_len)
         
         # Apply mask if provided
         if mask is not None:
@@ -100,10 +109,15 @@ class MultiHeadAttention(nn.Module):
         attention = self.dropout(attention)
         
         # Apply attention to values
-        context = torch.matmul(attention, V)
-        context = context.transpose(1, 2).contiguous()
-        context = context.view(batch_size, -1, self.hidden_size)
+        context = torch.matmul(attention, V)  # (batch, num_heads, seq_len, head_dim)
         
+        # Transpose back to (batch, seq_len, num_heads, head_dim)
+        context = context.transpose(1, 2).contiguous()
+        
+        # Reshape to (batch, seq_len, hidden_size)
+        context = context.view(batch_size, seq_len, self.hidden_size)
+        
+        # Final linear projection
         output = self.fc_out(context)
         
         return output, attention
@@ -164,12 +178,12 @@ class EnhancedTransformerBlock(nn.Module):
     ) -> torch.Tensor:
         # Self-attention
         attn_out, _ = self.attention(x, x, x)
-        x = x + self.dropout1(attn_out)
+        x = x + self.dropout1(attn_out)  # residual connection
         x = self.norm1(x, volatility)
         
         # Feed-forward with volatility adaptation
         ffn_out = self.ffn(x, volatility)
-        x = x + self.dropout2(ffn_out)
+        x = x + self.dropout2(ffn_out)  # residual connection
         x = self.norm2(x, volatility)
         
         return x
@@ -333,7 +347,7 @@ class TemporalFusionTransformerV3EnhancedOptimized(nn.Module):
         device = x.device
         
         # Project input (with normalization)
-        x = self.input_projection(x)
+        x = self.input_projection(x)  # (batch, seq_len, hidden_size)
         
         # Add positional encoding
         pos_enc = self.positional_encoding[:, :seq_len, :].to(device)
