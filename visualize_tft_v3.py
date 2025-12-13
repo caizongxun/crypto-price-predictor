@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-🎉 TFT V3 Visualization & Multi-Step Forecasting
+TFT V3 Visualization & Multi-Step Forecasting
 
-✨ Major Improvements:
+Major Features:
 1. Ensemble Smoothing
    - Kalman + Exponential + Moving Average
    - Dynamic weight selection
@@ -29,32 +29,38 @@
    - Directional accuracy by volatility
    - Outlier detection
 
-📊 Expected Improvements Over V2:
-- MAE: 6.67 → < 2.5 USD (↓62%)
-- MAPE: 4.55% → < 1.5% (↓67%)
+Expected Improvements:
+- MAE: 6.67 to <2.5 USD
+- MAPE: 4.55% to <1.5%
 - Prediction smoothness: +45%
 - Multi-step accuracy: +55%
+
+Usage:
+  python visualize_tft_v3.py --symbol SOL
+  python visualize_tft_v3.py --symbol BTC --lookback 120
+  python visualize_tft_v3.py --symbol ETH --steps 10
 """
 
 import os
+import sys
 import torch
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from scipy.stats import gaussian_kde
 from scipy.ndimage import uniform_filter1d
-from src.model_tft import TemporalFusionTransformer
-from src.data_fetcher_tft import TFTDataFetcher
+from pathlib import Path
 import logging
-from src.utils import setup_logging
 from datetime import datetime
+
+sys.path.insert(0, str(Path(__file__).parent))
+
+from src.utils import setup_logging
+from src.data_fetcher_tft_v3 import TFTDataFetcher
+from src.model_tft_v3_optimized import TemporalFusionTransformerV3Optimized
 
 setup_logging()
 logger = logging.getLogger(__name__)
-
-# Define symbols
-CHECK = "[OK]"
-CROSS = "[X]"
 
 
 class EnsembleSmoother:
@@ -185,11 +191,11 @@ def visualize_tft_v3(symbol='SOL', lookback=60, predict_steps=5):
             return
         
         # Load model
-        logger.info(f"[4/8] Loading V3 model...")
-        model_path = f'models/saved_models/{symbol}_tft_v3_model.pth'
+        logger.info(f"[4/8] Loading model...")
+        model_path = f'models/saved_models/{symbol}_tft_directional_model.pth'
         
         if not os.path.exists(model_path):
-            logger.warning(f"V3 model not found, trying V2...")
+            logger.warning(f"Directional model not found, trying standard...")
             model_path = f'models/saved_models/{symbol}_tft_model.pth'
         
         if not os.path.exists(model_path):
@@ -197,25 +203,30 @@ def visualize_tft_v3(symbol='SOL', lookback=60, predict_steps=5):
             return
         
         input_size = X.shape[2]
-        model = TemporalFusionTransformer(
+        model = TemporalFusionTransformerV3Optimized(
             input_size=input_size,
             hidden_size=256,
             num_heads=8,
             num_layers=2,
-            dropout=0.2
+            dropout=0.2,
+            use_direction_head=True
         ).to(device)
         
         state_dict = torch.load(model_path, map_location=device)
         model.load_state_dict(state_dict)
         model.eval()
-        logger.info(f"Model loaded")
+        logger.info(f"Model loaded successfully")
         
         # Generate predictions
         logger.info(f"[5/8] Generating predictions...")
         X_tensor = torch.tensor(X, dtype=torch.float32).to(device)
         
         with torch.no_grad():
-            preds_scaled = model(X_tensor).cpu().numpy().flatten()
+            if hasattr(model, 'use_direction_head') and model.use_direction_head:
+                preds_scaled, _ = model(X_tensor, return_direction_logits=True)
+            else:
+                preds_scaled = model(X_tensor)
+            preds_scaled = preds_scaled.squeeze().cpu().numpy()
         
         # Inverse transform
         num_features = X.shape[2]
@@ -260,13 +271,12 @@ def visualize_tft_v3(symbol='SOL', lookback=60, predict_steps=5):
         logger.info(f"  R2:               {metrics_raw['r2']:.4f}")
         logger.info(f"  Dir. Accuracy:    {metrics_raw['dir_acc']:.2f}%")
         
-        # Create improvement symbols
-        mae_symbol = CHECK if metrics_smooth['mae'] < metrics_raw['mae'] else CROSS
-        mape_symbol = CHECK if metrics_smooth['mape'] < metrics_raw['mape'] else CROSS
-        rmse_symbol = CHECK if metrics_smooth['rmse'] < metrics_raw['rmse'] else CROSS
-        smape_symbol = CHECK if metrics_smooth['smape'] < metrics_raw['smape'] else CROSS
-        r2_symbol = CHECK if metrics_smooth['r2'] > metrics_raw['r2'] else CROSS
-        dir_acc_symbol = CHECK if metrics_smooth['dir_acc'] > metrics_raw['dir_acc'] else CROSS
+        mae_symbol = "[OK]" if metrics_smooth['mae'] < metrics_raw['mae'] else "[X]"
+        mape_symbol = "[OK]" if metrics_smooth['mape'] < metrics_raw['mape'] else "[X]"
+        rmse_symbol = "[OK]" if metrics_smooth['rmse'] < metrics_raw['rmse'] else "[X]"
+        smape_symbol = "[OK]" if metrics_smooth['smape'] < metrics_raw['smape'] else "[X]"
+        r2_symbol = "[OK]" if metrics_smooth['r2'] > metrics_raw['r2'] else "[X]"
+        dir_acc_symbol = "[OK]" if metrics_smooth['dir_acc'] > metrics_raw['dir_acc'] else "[X]"
         
         logger.info(f"\nENSEMBLE SMOOTHED (V3):")
         logger.info(f"  MAE:              {metrics_smooth['mae']:.4f} USD {mae_symbol}")
@@ -290,8 +300,10 @@ def visualize_tft_v3(symbol='SOL', lookback=60, predict_steps=5):
         logger.info("="*80)
         
         # Visualization
-        logger.info(f"\nGenerating advanced visualizations...")
+        logger.info(f"\nGenerating visualization...")
         fig = plt.figure(figsize=(22, 16))
+        fig.suptitle(f'{symbol} TFT V3 Analysis - {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}',
+                    fontsize=16, fontweight='bold')
         
         # Plot 1: Price comparison with ensemble smoothing
         ax1 = plt.subplot(3, 3, 1)
@@ -308,7 +320,7 @@ def visualize_tft_v3(symbol='SOL', lookback=60, predict_steps=5):
         ax1.fill_between(x_range, y_pred_ensemble[-last_n:] - error_std, y_pred_ensemble[-last_n:] + error_std,
                         alpha=0.1, color='green')
         
-        ax1.set_title(f'{symbol} Price - Ensemble Smoothing Comparison\nEnsemble MAE: {metrics_smooth["mae"]:.4f}',
+        ax1.set_title(f'{symbol} Price - Ensemble Smoothing\nEnsemble MAE: {metrics_smooth["mae"]:.4f}',
                      fontsize=12, fontweight='bold')
         ax1.set_xlabel('Hours')
         ax1.set_ylabel('Price (USD)')
@@ -328,7 +340,7 @@ def visualize_tft_v3(symbol='SOL', lookback=60, predict_steps=5):
             pass
         
         ax2.axvline(0, color='red', linestyle='--', alpha=0.7)
-        ax2.set_title('Prediction Error Distribution\n(Ensemble)',
+        ax2.set_title('Prediction Error Distribution',
                      fontsize=12, fontweight='bold')
         ax2.set_xlabel('Error (USD)')
         ax2.set_ylabel('Density')
@@ -409,8 +421,6 @@ def visualize_tft_v3(symbol='SOL', lookback=60, predict_steps=5):
         
         # Plot 7: Multi-step forecast
         ax7 = plt.subplot(3, 3, 7)
-        forecast_x = np.arange(len(y_true[-20:]) + predict_steps)
-        
         ax7.plot(range(len(y_true[-20:])), y_true[-20:], 'o-', color='blue', label='Historical', linewidth=2)
         ax7.plot(range(len(y_true[-20:]) - 1, len(y_true[-20:]) + predict_steps - 1),
                 np.concatenate([[y_true[-1]], future_inverse]), 's--', color='green',
@@ -423,7 +433,7 @@ def visualize_tft_v3(symbol='SOL', lookback=60, predict_steps=5):
         ax7.legend()
         ax7.grid(True, alpha=0.3)
         
-        # Plot 8: Smoothing comparison
+        # Plot 8: Improvements
         ax8 = plt.subplot(3, 3, 8)
         improvements = [
             ((metrics_raw['mae'] - metrics_smooth['mae']) / metrics_raw['mae'] * 100),
@@ -453,14 +463,15 @@ Key Metrics:
   R2: {metrics_smooth['r2']:.4f}
   Dir. Acc: {metrics_smooth['dir_acc']:.1f}%
 
-Improvements (vs V2):
-  MAE: {((6.6739 - metrics_smooth['mae']) / 6.6739 * 100):.1f}% down
-  MAPE: {((4.55 - metrics_smooth['mape']) / 4.55 * 100):.1f}% down
-
 Data:
   Samples: {len(y_true):,}
-  Price Range: ${y_true.min():.2f}-${y_true.max():.2f}
+  Price Range: {y_true.min():.2f}-{y_true.max():.2f}
   Volatility: {volatility.mean():.4f} +/- {volatility.std():.4f}
+
+Forecast:
+  Steps: {predict_steps}
+  Latest: {y_true[-1]:.4f}
+  Next: {future_inverse[0]:.4f}
 """
         
         ax9.text(0.05, 0.95, summary, transform=ax9.transAxes, fontsize=10,
@@ -481,14 +492,16 @@ Data:
         
     except Exception as e:
         logger.error(f"Visualization failed: {e}", exc_info=True)
+        import traceback
+        traceback.print_exc()
 
 
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='TFT V3 Visualization')
-    parser.add_argument('--symbol', type=str, default='SOL')
-    parser.add_argument('--lookback', type=int, default=60)
-    parser.add_argument('--steps', type=int, default=5)
+    parser.add_argument('--symbol', type=str, default='SOL', help='Crypto symbol (default: SOL)')
+    parser.add_argument('--lookback', type=int, default=60, help='Lookback period (default: 60)')
+    parser.add_argument('--steps', type=int, default=5, help='Forecast steps (default: 5)')
     args = parser.parse_args()
     
     logger.info(f"\nTFT V3 Visualization: {args.symbol}...\n")
