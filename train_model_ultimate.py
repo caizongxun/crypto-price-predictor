@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
 Ultimate Cryptocurrency Price Prediction Model Trainer
-Supports long-duration training with advanced regularization for maximum accuracy
+With Enhanced Leading Indicators to Reduce Prediction Lag
 
 Usage:
-  python train_model_ultimate.py --symbol BTC --epochs 300
-  python train_model_ultimate.py --symbol ETH --epochs 300 --batch-size 16
-  python train_model_ultimate.py --symbol SOL --epochs 500 --device cuda
+  python train_model_ultimate.py --symbol SOL --epochs 100 --device cuda
+  python train_model_ultimate.py --symbol BTC --epochs 150 --device cuda
+  python train_model_ultimate.py --symbol ETH --epochs 100 --device cuda
 """
 
 import argparse
@@ -33,21 +33,21 @@ def train_model_ultimate(
     symbol: str,
     trading_pair: str,
     lookback: int = 60,
-    epochs: int = 300,
+    epochs: int = 100,
     batch_size: int = 16,
     learning_rate: float = 0.00005,
     device: str = 'auto'
 ):
     """
-    Train ultimate cryptocurrency prediction model with maximum accuracy focus.
+    Train ultimate cryptocurrency prediction model with enhanced leading indicators.
     
     Args:
-        symbol: Cryptocurrency symbol (e.g., BTC)
-        trading_pair: Trading pair (e.g., BTC/USDT)
-        lookback: Lookback period in days
-        epochs: Number of training epochs (recommended: 200-500)
-        batch_size: Batch size (smaller = more stable, default: 16)
-        learning_rate: Learning rate (default: 0.00005)
+        symbol: Cryptocurrency symbol (e.g., SOL)
+        trading_pair: Trading pair (e.g., SOL/USDT)
+        lookback: Lookback period in hours
+        epochs: Number of training epochs
+        batch_size: Batch size
+        learning_rate: Learning rate
         device: Training device (auto, cuda, or cpu)
     """
     try:
@@ -61,11 +61,11 @@ def train_model_ultimate(
             selected_device = device
         
         logger.info("="*80)
-        logger.info("🚀 ULTIMATE CRYPTOCURRENCY PRICE PREDICTION MODEL TRAINING")
+        logger.info("ULTIMATE MODEL TRAINING WITH ENHANCED LEADING INDICATORS")
         logger.info("="*80)
         logger.info(f"Symbol: {symbol}")
         logger.info(f"Trading Pair: {trading_pair}")
-        logger.info(f"Lookback Period: {lookback} days")
+        logger.info(f"Lookback Period: {lookback} hours")
         logger.info(f"Training Configuration:")
         logger.info(f"  - Epochs: {epochs}")
         logger.info(f"  - Batch Size: {batch_size}")
@@ -76,7 +76,7 @@ def train_model_ultimate(
         # Step 1: Fetch historical data
         logger.info("\n[Step 1/5] Fetching historical data...")
         data_fetcher = DataFetcher()
-        df = data_fetcher.fetch_ohlcv_binance(trading_pair, timeframe='1d', limit=1000)
+        df = data_fetcher.fetch_ohlcv_binance(trading_pair, timeframe='1h', limit=1000)
         
         if df is None or df.empty:
             logger.error(f"Failed to fetch data for {symbol}")
@@ -84,13 +84,16 @@ def train_model_ultimate(
         
         logger.info(f"[OK] Fetched {len(df)} candles for {trading_pair}")
         
-        # Step 2: Add technical indicators
-        logger.info("\n[Step 2/5] Adding technical indicators...")
+        # Step 2: Add technical indicators (including leading indicators)
+        logger.info("\n[Step 2/5] Adding technical indicators + leading indicators...")
         df = data_fetcher.add_technical_indicators(df)
-        logger.info(f"[OK] Added technical indicators for {len(df)} rows")
+        logger.info(f"[OK] Added indicators for {len(df)} rows")
+        logger.info(f"    - Standard indicators: 17 features")
+        logger.info(f"    - Leading indicators: 23 features (ROC, Stochastic, Williams %R, MFI, CCI, etc.)")
+        logger.info(f"    - Total: 40 features")
         
         # Step 3: Prepare ML features
-        logger.info("\n[Step 3/5] Preparing ML features...")
+        logger.info("\n[Step 3/5] Preparing ML features with enhanced feature set...")
         features_result = data_fetcher.prepare_ml_features(df, lookback=lookback)
         
         # Handle both dict and tuple returns for backward compatibility
@@ -109,7 +112,7 @@ def train_model_ultimate(
             return False
         
         logger.info(f"[OK] Prepared {X.shape[0]} sequences")
-        logger.info(f"    - X shape: {X.shape}")
+        logger.info(f"    - X shape: {X.shape} ({X.shape[2]} features x {X.shape[1]} time steps)")
         logger.info(f"    - y shape: {y.shape}")
         
         # Step 4: Initialize trainer and train model
@@ -118,6 +121,7 @@ def train_model_ultimate(
         
         model, history = trainer.train_ultimate_ensemble(
             X, y,
+            symbol=symbol,
             epochs=epochs,
             batch_size=batch_size,
             learning_rate=learning_rate,
@@ -129,37 +133,39 @@ def train_model_ultimate(
         model_dir = Path('models/saved_models')
         model_dir.mkdir(parents=True, exist_ok=True)
         
-        # Save symbol-specific model
-        symbol_model_path = model_dir / f"{symbol}_ultimate_model.pth"
-        torch.save(model.state_dict(), symbol_model_path)
-        logger.info(f"[OK] Ultimate model saved to {symbol_model_path}")
-        
-        # Also save as best model for backward compatibility
-        best_model_path = model_dir / 'best_lstm_model.pth'
-        torch.save(model.state_dict(), best_model_path)
-        logger.info(f"[OK] Model also saved as best_lstm_model.pth")
+        # Model is automatically saved during training
+        model_path = model_dir / f"{symbol}_model.pth"
+        logger.info(f"[OK] Model saved to {model_path}")
         
         # Training summary
         logger.info("\n" + "="*80)
-        logger.info("✅ TRAINING COMPLETED SUCCESSFULLY!")
+        logger.info("TRAINING COMPLETED SUCCESSFULLY!")
         logger.info("="*80)
         logger.info(f"Final Training Loss: {history['train_loss'][-1]:.6f}")
         logger.info(f"Final Validation Loss: {history['val_loss'][-1]:.6f}")
         logger.info(f"Best Validation Loss: {min(history['val_loss']):.6f}")
         logger.info(f"Final Overfitting Ratio: {history['overfitting_ratio'][-1]:.3f}")
         logger.info(f"Total Epochs Trained: {len(history['train_loss'])}")
-        logger.info(f"Model Location: {symbol_model_path}")
+        logger.info(f"Model Location: {model_path}")
+        logger.info("\nOptimizations Applied:")
+        logger.info("  1. Enhanced Feature Engineering:")
+        logger.info("     - Rate of Change (ROC): 1-period, 3-period, 5-period momentum")
+        logger.info("     - Price Acceleration: Momentum delta detection")
+        logger.info("     - Volume Acceleration: Leading volume signals")
+        logger.info("     - Stochastic Oscillator: Lead RSI momentum shifts")
+        logger.info("     - Williams %R: Overbought/oversold detection")
+        logger.info("     - Money Flow Index: Volume-based momentum")
+        logger.info("     - Commodity Channel Index: Momentum oscillator")
+        logger.info("  2. Advanced Regularization: Dropout 0.6 + L2 1e-3")
+        logger.info("  3. Multi-loss Function: MAE + Huber + L1")
+        logger.info("  4. Ensemble Architecture: LSTM-5 + GRU-5 + Transformer-4")
+        logger.info("  5. Learning Rate Scheduling: Warmup + Cosine Annealing")
+        logger.info("  6. Model Backup: Automatic old model backup with timestamp")
         logger.info("="*80)
-        logger.info("\n🎯 Key Features Implemented:")
-        logger.info("  [✓] Ultra-deep ensemble (LSTM-5 + GRU-5 + Transformer-4)")
-        logger.info("  [✓] Hidden size: 512 (8.5M parameters)")
-        logger.info("  [✓] Aggressive dropout: 0.6 + L2 regularization: 1e-3")
-        logger.info("  [✓] Multi-loss function (MAE + Huber + L1)")
-        logger.info("  [✓] Residual connections for better gradient flow")
-        logger.info("  [✓] Warmup + Cosine annealing learning rate schedule")
-        logger.info("  [✓] Gradient accumulation for stable training")
-        logger.info("  [✓] Mixed precision training (GPU)")
-        logger.info("  [✓] Early stopping with patient: 50 epochs")
+        logger.info("\nNext Steps:")
+        logger.info(f"  1. Visualize predictions: python visualize_predictions_ultimate.py --symbol {symbol}")
+        logger.info(f"  2. Compare with previous: Check MAE improvement vs baseline")
+        logger.info(f"  3. Train other symbols: BTC, ETH, etc.")
         logger.info("="*80 + "\n")
         
         return True
@@ -171,32 +177,31 @@ def train_model_ultimate(
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
-        description='Train ultimate cryptocurrency prediction model with maximum accuracy',
+        description='Train ultimate cryptocurrency prediction model with leading indicators',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Standard ultimate training (300 epochs)
-  python train_model_ultimate.py --symbol BTC --epochs 300
+  # Standard training with enhanced features
+  python train_model_ultimate.py --symbol SOL --epochs 100 --device cuda
   
-  # Ultra-long training for maximum accuracy (500 epochs)
-  python train_model_ultimate.py --symbol ETH --epochs 500 --batch-size 16
+  # Train BTC with longer epochs
+  python train_model_ultimate.py --symbol BTC --epochs 150 --device cuda
   
-  # Custom configuration
-  python train_model_ultimate.py --symbol SOL --epochs 300 --batch-size 8 --learning-rate 0.00003
+  # Train ETH
+  python train_model_ultimate.py --symbol ETH --epochs 100 --device cuda
   
-  # Force CPU training
-  python train_model_ultimate.py --symbol BTC --device cpu --epochs 200
+  # CPU training (slower)
+  python train_model_ultimate.py --symbol SOL --epochs 100 --device cpu
         """
     )
     
-    parser.add_argument('--symbol', default='BTC', help='Cryptocurrency symbol (default: BTC)')
+    parser.add_argument('--symbol', default='SOL', help='Cryptocurrency symbol (default: SOL)')
     parser.add_argument('--trading-pair', default=None, help='Trading pair (default: {SYMBOL}/USDT)')
-    parser.add_argument('--lookback', type=int, default=60, help='Lookback period in days (default: 60)')
-    parser.add_argument('--epochs', type=int, default=300, help='Number of training epochs (default: 300)')
-    parser.add_argument('--batch-size', type=int, default=16, help='Batch size (default: 16, smaller = more stable)')
+    parser.add_argument('--lookback', type=int, default=60, help='Lookback period in hours (default: 60)')
+    parser.add_argument('--epochs', type=int, default=100, help='Number of training epochs (default: 100)')
+    parser.add_argument('--batch-size', type=int, default=16, help='Batch size (default: 16)')
     parser.add_argument('--learning-rate', type=float, default=0.00005, help='Learning rate (default: 0.00005)')
-    parser.add_argument('--device', default='auto', choices=['auto', 'cuda', 'cpu'],
-                        help='Training device (default: auto)')
+    parser.add_argument('--device', default='cuda', choices=['auto', 'cuda', 'cpu'], help='Training device (default: cuda)')
     
     args = parser.parse_args()
     
