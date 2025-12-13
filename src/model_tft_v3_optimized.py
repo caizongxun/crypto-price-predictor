@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-🎯 TFT V3 Optimized - Enhanced Directional Prediction
+🏃 TFT V3 Optimized - Enhanced Directional Prediction
 
 ✨ Directional Optimization Techniques:
 
@@ -307,14 +307,15 @@ class TemporalFusionTransformerV3Optimized(nn.Module):
 class DirectionalLossV3(nn.Module):
     """Enhanced directional loss - MORE FOCUS ON DIRECTION"""
     
-    def __init__(self, direction_weight: float = 2.0):
+    def __init__(self, direction_weight: float = 2.0, device: str = 'cuda'):
         super().__init__()
         self.direction_weight = direction_weight  # Increased from 0.5
         self.mse_loss = nn.MSELoss()
+        self.device = device
         
         # Weighted cross-entropy for imbalanced classes
         # Down=0, Neutral=1, Up=2
-        class_weights = torch.tensor([1.0, 0.5, 1.0])  # Less weight for neutral
+        class_weights = torch.tensor([1.0, 0.5, 1.0], device=device)
         self.direction_loss = nn.CrossEntropyLoss(weight=class_weights, reduction='mean')
     
     def forward(
