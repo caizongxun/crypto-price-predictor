@@ -28,7 +28,7 @@ class EnhancedLSTMModel(nn.Module):
             hidden_size, 
             num_layers,
             batch_first=True,
-            dropout=0.4 if num_layers > 1 else 0,  # Increased dropout
+            dropout=0.5 if num_layers > 1 else 0,  # 🆙 增強 dropout 到 0.5
             bidirectional=True
         )
         
@@ -38,8 +38,8 @@ class EnhancedLSTMModel(nn.Module):
         # Multi-head attention with more heads
         self.attention = nn.MultiheadAttention(
             hidden_size * 2,
-            num_heads=16,  # Increased from 8
-            dropout=0.3,   # Increased from 0.2
+            num_heads=16,
+            dropout=0.5,  # 🆙 增強 attention dropout
             batch_first=True
         )
         
@@ -48,21 +48,21 @@ class EnhancedLSTMModel(nn.Module):
             nn.Linear(hidden_size * 2, 512),
             nn.BatchNorm1d(512),
             nn.ReLU(),
-            nn.Dropout(0.4),
+            nn.Dropout(0.5),  # 🆙 增強
             
             nn.Linear(512, 256),
             nn.BatchNorm1d(256),
             nn.ReLU(),
-            nn.Dropout(0.4),
+            nn.Dropout(0.5),  # 🆙 增強
             
             nn.Linear(256, 128),
             nn.BatchNorm1d(128),
             nn.ReLU(),
-            nn.Dropout(0.3),
+            nn.Dropout(0.4),  # 🆙 增強
             
             nn.Linear(128, 64),
             nn.ReLU(),
-            nn.Dropout(0.2),
+            nn.Dropout(0.3),  # 🆙 增強
             
             nn.Linear(64, 1)
         )
@@ -102,7 +102,7 @@ class GRUModel(nn.Module):
             hidden_size,
             num_layers,
             batch_first=True,
-            dropout=0.4 if num_layers > 1 else 0,
+            dropout=0.5 if num_layers > 1 else 0,  # 🆙 增強
             bidirectional=True
         )
         
@@ -114,21 +114,21 @@ class GRUModel(nn.Module):
             nn.Linear(hidden_size * 2, 512),
             nn.BatchNorm1d(512),
             nn.ReLU(),
-            nn.Dropout(0.4),
+            nn.Dropout(0.5),  # 🆙 增強
             
             nn.Linear(512, 256),
             nn.BatchNorm1d(256),
             nn.ReLU(),
-            nn.Dropout(0.4),
+            nn.Dropout(0.5),  # 🆙 增強
             
             nn.Linear(256, 128),
             nn.BatchNorm1d(128),
             nn.ReLU(),
-            nn.Dropout(0.3),
+            nn.Dropout(0.4),  # 🆙 增強
             
             nn.Linear(128, 64),
             nn.ReLU(),
-            nn.Dropout(0.2),
+            nn.Dropout(0.3),  # 🆙 增強
             
             nn.Linear(64, 1)
         )
@@ -160,12 +160,12 @@ class TransformerEncoderModel(nn.Module):
         # Positional encoding
         self.positional_encoding = nn.Parameter(torch.randn(1, 60, hidden_size))
         
-        # Transformer encoder
+        # Transformer encoder with stronger dropout
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=hidden_size,
             nhead=8,
             dim_feedforward=512,
-            dropout=0.3,
+            dropout=0.4,  # 🆙 增強
             batch_first=True,
             activation='relu'
         )
@@ -175,10 +175,10 @@ class TransformerEncoderModel(nn.Module):
         self.fc = nn.Sequential(
             nn.Linear(hidden_size, 256),
             nn.ReLU(),
-            nn.Dropout(0.3),
+            nn.Dropout(0.4),  # 🆙 增強
             nn.Linear(256, 128),
             nn.ReLU(),
-            nn.Dropout(0.2),
+            nn.Dropout(0.3),  # 🆙 增強
             nn.Linear(128, 1)
         )
     
@@ -208,15 +208,15 @@ class EnsembleModel(nn.Module):
         self.gru_model = gru_model
         self.transformer_model = transformer_model
         
-        # Advanced fusion layer
+        # Advanced fusion layer with stronger regularization
         self.fusion = nn.Sequential(
             nn.Linear(3, 128),
             nn.BatchNorm1d(128),
             nn.ReLU(),
-            nn.Dropout(0.2),
+            nn.Dropout(0.3),  # 🆙 增強
             nn.Linear(128, 64),
             nn.ReLU(),
-            nn.Dropout(0.1),
+            nn.Dropout(0.2),  # 🆙 增強
             nn.Linear(64, 1)
         )
     
@@ -291,7 +291,7 @@ class OptimizedModelTrainer:
         batch_size: int = 64,
         learning_rate: float = 0.0005
     ) -> Tuple[EnsembleModel, dict]:
-        """Train advanced ensemble for 90% accuracy"""
+        """Train advanced ensemble for 90% accuracy with overfitting detection"""
         
         # Prepare data
         train_loader, test_loader, scalers = self.prepare_data(X, y, batch_size=batch_size)
@@ -303,11 +303,11 @@ class OptimizedModelTrainer:
         transformer_model = TransformerEncoderModel(input_size).to(self.device)
         ensemble_model = EnsembleModel(lstm_model, gru_model, transformer_model).to(self.device)
         
-        # Optimizer and scheduler
+        # Optimizer with stronger L2 regularization
         optimizer = optim.AdamW(
             ensemble_model.parameters(),
             lr=learning_rate,
-            weight_decay=1e-4,
+            weight_decay=5e-4,  # 🆙 增強 L2 正則化 (從 1e-4 到 5e-4)
             betas=(0.9, 0.999)
         )
         scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
@@ -321,17 +321,19 @@ class OptimizedModelTrainer:
         loss_fn = nn.SmoothL1Loss(beta=0.1)
         
         best_val_loss = float('inf')
-        patience = 20
+        patience = 30  # 🆙 增加 patience 到 30 (從 20)
         patience_counter = 0
         training_history = {
             'train_loss': [],
             'val_loss': [],
-            'epochs': []
+            'epochs': [],
+            'overfitting_ratio': []  # 🆙 新增：過度擬合比率監控
         }
         
         logger.info(f"Starting ensemble training - Epochs: {epochs}, Batch Size: {batch_size}")
-        logger.info(f"Optimizer: AdamW (lr={learning_rate}), Loss: SmoothL1Loss")
-        logger.info(f"Models: LSTM (4 layers) + GRU (4 layers) + Transformer (3 layers)")
+        logger.info(f"Optimizer: AdamW (lr={learning_rate}, weight_decay=5e-4)")
+        logger.info(f"Loss: SmoothL1Loss, Models: LSTM (4 layers) + GRU (4 layers) + Transformer (3 layers)")
+        logger.info(f"Dropout: 0.5 in main layers, 🆙 ENHANCED REGULARIZATION ENABLED")
         
         for epoch in range(1, epochs + 1):
             # Training
@@ -352,14 +354,14 @@ class OptimizedModelTrainer:
                     
                     self.scaler.scale(loss).backward()
                     self.scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(ensemble_model.parameters(), 1.0)
+                    torch.nn.utils.clip_grad_norm_(ensemble_model.parameters(), 1.0)  # 梯度裁剪
                     self.scaler.step(optimizer)
                     self.scaler.update()
                 else:
                     outputs = ensemble_model(X_batch)
                     loss = loss_fn(outputs, y_batch)
                     loss.backward()
-                    torch.nn.utils.clip_grad_norm_(ensemble_model.parameters(), 1.0)
+                    torch.nn.utils.clip_grad_norm_(ensemble_model.parameters(), 1.0)  # 梯度裁剪
                     optimizer.step()
                 
                 train_loss += loss.item()
@@ -380,17 +382,24 @@ class OptimizedModelTrainer:
                     val_loss += loss.item()
             
             val_loss /= len(test_loader)
+            
+            # 🆙 計算過度擬合比率
+            overfitting_ratio = val_loss / train_loss if train_loss > 0 else float('inf')
+            
             scheduler.step()
             
             # Record
             training_history['train_loss'].append(train_loss)
             training_history['val_loss'].append(val_loss)
             training_history['epochs'].append(epoch)
+            training_history['overfitting_ratio'].append(overfitting_ratio)
             
             if epoch % 10 == 0:
+                status = "🟢 GOOD" if overfitting_ratio < 1.5 else "🟡 MODERATE" if overfitting_ratio < 2.0 else "🔴 HIGH"
                 logger.info(
                     f"Epoch {epoch}/{epochs} - "
                     f"Train Loss: {train_loss:.6f}, Val Loss: {val_loss:.6f}, "
+                    f"Overfit Ratio: {overfitting_ratio:.3f} {status}, "
                     f"LR: {optimizer.param_groups[0]['lr']:.2e}"
                 )
             
@@ -409,6 +418,8 @@ class OptimizedModelTrainer:
         logger.info(f"Training completed!")
         logger.info(f"Best validation loss: {best_val_loss:.6f}")
         logger.info(f"Expected accuracy: ~90% (based on loss: {best_val_loss:.6f})")
+        logger.info(f"Final overfitting ratio: {training_history['overfitting_ratio'][-1]:.3f}")
+        logger.info(f"Goal: < 1.5 (current: {training_history['overfitting_ratio'][-1]:.3f})")
         logger.info("="*70)
         
         return ensemble_model, training_history
