@@ -27,7 +27,7 @@ class AdaptiveLayerNorm(nn.Module):
     """Layer norm with adaptive gain/bias based on volatility"""
     
     def __init__(self, hidden_size: int):
-        super().__init__())
+        super().__init__()
         self.ln = nn.LayerNorm(hidden_size)
         self.gamma = nn.Parameter(torch.ones(1))
         self.beta = nn.Parameter(torch.zeros(1))
