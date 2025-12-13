@@ -138,7 +138,7 @@ class DataFetcher:
         return data
     
     def add_technical_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Add common technical indicators to OHLCV data.
+        """Add common technical indicators and leading indicators to OHLCV data.
         
         Args:
             df: DataFrame with OHLCV data
@@ -191,7 +191,80 @@ class DataFetcher:
             df['Daily_return'] = df['close'].pct_change()
             df['Price_momentum'] = df['close'].pct_change(periods=5)
             
-            logger.info(f"Added technical indicators for {len(df)} rows")
+            # ========================================
+            # NEW LEADING INDICATORS (Anti-Lag Features)
+            # ========================================
+            
+            # 1. Rate of Change (ROC) - Momentum indicators
+            # These lead the price by 1-2 periods
+            df['ROC_1'] = df['close'].pct_change(periods=1)  # 1-period ROC
+            df['ROC_3'] = df['close'].pct_change(periods=3)  # 3-period ROC
+            df['ROC_5'] = df['close'].pct_change(periods=5)  # 5-period ROC
+            
+            # 2. Price Acceleration - Rate of change of momentum
+            # Tells us if momentum is increasing/decreasing
+            df['Price_accel'] = df['Price_momentum'].diff()
+            
+            # 3. Volume Acceleration - Leading volume signal
+            # When volume accelerates, price often follows
+            df['Volume_accel'] = df['Volume_ratio'].diff()
+            
+            # 4. Stochastic Oscillator - Lead RSI
+            # More sensitive to momentum shifts
+            def stochastic(high, low, close, period=14):
+                lowest_low = low.rolling(window=period).min()
+                highest_high = high.rolling(window=period).max()
+                k_percent = 100 * ((close - lowest_low) / (highest_high - lowest_low))
+                d_percent = k_percent.rolling(window=3).mean()
+                return k_percent, d_percent
+            
+            df['Stoch_K'], df['Stoch_D'] = stochastic(df['high'], df['low'], df['close'])
+            
+            # 5. Williams %R - Lead indicator for overbought/oversold
+            def williams_r(high, low, close, period=14):
+                highest_high = high.rolling(window=period).max()
+                lowest_low = low.rolling(window=period).min()
+                return -100 * ((highest_high - close) / (highest_high - lowest_low))
+            
+            df['Williams_R'] = williams_r(df['high'], df['low'], df['close'])
+            
+            # 6. Money Flow Index (MFI) - Volume-based momentum
+            def money_flow_index(high, low, close, volume, period=14):
+                typical_price = (high + low + close) / 3
+                raw_mf = typical_price * volume
+                
+                positive_mf = np.where(typical_price > typical_price.shift(1), raw_mf, 0)
+                negative_mf = np.where(typical_price < typical_price.shift(1), raw_mf, 0)
+                
+                positive_mf_sum = pd.Series(positive_mf).rolling(window=period).sum()
+                negative_mf_sum = pd.Series(negative_mf).rolling(window=period).sum()
+                
+                mfi_ratio = positive_mf_sum / negative_mf_sum
+                mfi = 100 - (100 / (1 + mfi_ratio))
+                return mfi
+            
+            df['MFI'] = money_flow_index(df['high'], df['low'], df['close'], df['volume'])
+            
+            # 7. CCI (Commodity Channel Index) - Momentum oscillator
+            def cci(high, low, close, period=20):
+                tp = (high + low + close) / 3
+                sma_tp = tp.rolling(window=period).mean()
+                mad = tp.rolling(window=period).apply(lambda x: np.mean(np.abs(x - np.mean(x))))
+                return (tp - sma_tp) / (0.015 * mad)
+            
+            df['CCI'] = cci(df['high'], df['low'], df['close'])
+            
+            # 8. Normalized Volume - Scale-free volume indicator
+            df['Volume_normalized'] = (df['volume'] - df['volume'].rolling(20).mean()) / (df['volume'].rolling(20).std() + 1e-8)
+            
+            # 9. High-Low Range - Volatility but leading indicator for breakouts
+            df['HL_Range'] = (df['high'] - df['low']) / df['close']
+            
+            # 10. Close Position in Range - Where price closed relative to daily range
+            df['Close_position'] = (df['close'] - df['low']) / (df['high'] - df['low'] + 1e-8)
+            
+            logger.info(f"Added technical indicators + 10 leading indicators for {len(df)} rows")
+            logger.info(f"Total features: {len([c for c in df.columns if c != 'symbol'])}")
             return df
         except Exception as e:
             logger.error(f"Failed to add technical indicators: {e}")
@@ -208,13 +281,19 @@ class DataFetcher:
             Tuple of (features, labels) as numpy arrays
         """
         try:
-            # Select relevant features
+            # Select relevant features - UPDATED to include leading indicators
             feature_cols = [
                 'open', 'high', 'low', 'close', 'volume',
                 'SMA_10', 'SMA_20', 'SMA_50',
                 'RSI', 'MACD', 'MACD_diff',
                 'BB_upper', 'BB_lower', 'ATR',
-                'Volume_ratio', 'Daily_return', 'Price_momentum'
+                'Volume_ratio', 'Daily_return', 'Price_momentum',
+                # NEW LEADING INDICATORS
+                'ROC_1', 'ROC_3', 'ROC_5',
+                'Price_accel', 'Volume_accel',
+                'Stoch_K', 'Stoch_D',
+                'Williams_R', 'MFI', 'CCI',
+                'Volume_normalized', 'HL_Range', 'Close_position'
             ]
             
             # Remove NaN values
@@ -234,7 +313,7 @@ class DataFetcher:
             X = np.array(X)
             y = np.array(y)
             
-            logger.info(f"Prepared {len(X)} sequences for ML training")
+            logger.info(f"Prepared {len(X)} sequences for ML training with {len(feature_cols)} features")
             return X, y, scaler
         except Exception as e:
             logger.error(f"Failed to prepare ML features: {e}")
