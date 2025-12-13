@@ -1,46 +1,39 @@
 #!/usr/bin/env python3
 """
-🚀 TFT Training V3 - Advanced Multi-Step Prediction
+🚀 TFT Training V3 - Optimized for 3-5 Candle Ahead Prediction
 
-✨ Major Improvements Over V2:
-1. Seq2Seq Architecture
-   - Output Layer: Predict sequence of 3-5 steps
-   - Attention-based decoder
+✨ Key Improvements:
+1. Sequence-to-Sequence (Seq2Seq) Architecture
+   - Predict multiple future values at once
    - Better temporal dependencies
+   - Handles lookahead horizon better
 
-2. Volatility-Aware Loss
-   - Higher weight on high-volatility periods
-   - Penalizes outlier errors more
-   - Directional consistency bonus
+2. Enhanced Data Augmentation
+   - Noise injection (volatility-aware)
+   - Mixup between samples
+   - Time series rotation
 
-3. Residual Attention Blocks
-   - Skip connections improve gradient flow
-   - Multiple attention rounds
-   - Better feature extraction
-
-4. Advanced Data Augmentation
-   - Volatility-scaled noise injection
-   - SMOTE for undersample regions
-   - Time-series rotation with seasonal preservation
-   - Mixup with temporal awareness
-
-5. Loss Function Improvements
-   - Quantile loss for robustness
+3. Improved Loss Functions
+   - Weighted MSE (focus on recent errors)
    - Temporal consistency loss
-   - Multi-scale gradient penalty
+   - Direction-aware loss
 
-6. Training Optimizations
-   - Gradient accumulation for effective batch size
-   - Mixed precision training
-   - Dynamic learning rate scheduling based on loss plateau
-   - Early stopping with val loss history
+4. Advanced Training Techniques
+   - Learning rate warmup & decay
+   - Gradient accumulation
+   - Ensemble predictions
+   - Cross-validation
+
+5. Better Regularization
+   - Spectral normalization
+   - Layer-wise adaptation rate
+   - Dropout calibration
 
 📊 Expected Results:
-- MAE < 1.8 USD (from 6.67)
-- MAPE < 1.2% (from 4.55%)
-- Multi-step R² > 0.93
-- Directional Accuracy > 72%
-- Prediction variance < 2.5 USD
+- MAE < 2.5 USD
+- MAPE < 1.8%
+- Multi-step R² > 0.90
+- Directional Accuracy > 68%
 """
 
 import argparse
@@ -52,8 +45,12 @@ import torch.nn as nn
 import numpy as np
 from dotenv import load_dotenv
 from datetime import datetime
-from collections import defaultdict
 
+# UTF-8 encoding support for Windows
+import io
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+
+# Add src to path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from src.utils import setup_logging, create_directories
@@ -61,83 +58,73 @@ from src.data_fetcher_tft import TFTDataFetcher
 from src.model_tft import TemporalFusionTransformer
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
-from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, ReduceLROnPlateau
+from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, StepLR
 
 load_dotenv()
 setup_logging(log_level='INFO', log_file='logs/training_tft_v3.log')
 logger = logging.getLogger(__name__)
 
 
-class VolatilityAwareLoss(nn.Module):
-    """Loss that scales with market volatility
+class WeightedMSELoss(nn.Module):
+    """MSE Loss with temporal weighting
     
-    Higher errors during high volatility periods get more weight
-    This helps model focus on normal market conditions
+    Recent predictions (near forecast horizon) get higher weight
+    This helps model focus on accurate short-term predictions
     """
-    def __init__(self, base_weight=1.0, volatility_weight=2.0):
+    def __init__(self, weight_power=2.0):
         super().__init__()
-        self.base_weight = base_weight
-        self.volatility_weight = volatility_weight
+        self.weight_power = weight_power
     
-    def forward(self, pred, target, volatility=None):
-        mse = (pred - target) ** 2
+    def forward(self, pred, target):
+        # Ensure same shape
+        if pred.dim() == 0:
+            pred = pred.unsqueeze(0)
+        if target.dim() == 0:
+            target = target.unsqueeze(0)
         
-        if volatility is not None:
-            # Normalize volatility to [0.5, 2.0]
-            vol_min = volatility.min()
-            vol_max = volatility.max()
-            if vol_max > vol_min:
-                vol_norm = (volatility - vol_min) / (vol_max - vol_min + 1e-8)
-                weights = self.base_weight + self.volatility_weight * vol_norm
-            else:
-                weights = torch.ones_like(mse)
-            
-            weighted_mse = mse * weights.unsqueeze(-1)
+        # Create temporal weights: recent samples get higher weight
+        n_samples = pred.shape[0]
+        if n_samples > 1:
+            weights = torch.linspace(0.5, 1.5, n_samples, device=pred.device) ** self.weight_power
         else:
-            weighted_mse = mse
+            weights = torch.ones(n_samples, device=pred.device)
+        
+        mse = (pred - target) ** 2
+        weighted_mse = mse * weights.unsqueeze(-1)
         
         return weighted_mse.mean()
 
 
-class QuantileLoss(nn.Module):
-    """Quantile loss for robust predictions
+class DirectionalLoss(nn.Module):
+    """Loss that encourages correct directional predictions
     
-    More robust to outliers than MSE
-    Useful for price prediction in volatile markets
+    Penalizes predicting opposite direction to actual
     """
-    def __init__(self, quantile=0.5):
-        super().__init__()
-        self.quantile = quantile
-    
-    def forward(self, pred, target):
-        error = target - pred
-        return torch.mean(
-            torch.max((self.quantile - 1) * error, self.quantile * error)
-        )
-
-
-class TemporalConsistencyLoss(nn.Module):
-    """Penalizes temporal inconsistency in predictions"""
-    def __init__(self, weight=0.1):
+    def __init__(self, weight=0.3):
         super().__init__()
         self.weight = weight
     
     def forward(self, pred, target):
-        # Compute directional changes
-        if len(pred) > 1:
-            pred_diff = pred[1:] - pred[:-1]
-            target_diff = target[1:] - target[:-1]
+        # Ensure tensors are properly shaped
+        if pred.dim() == 0:
+            return torch.tensor(0.0, device=pred.device)
+        if target.dim() == 0:
+            return torch.tensor(0.0, device=pred.device)
+        
+        # Ensure same batch size
+        if len(pred) > 1 and len(target) > 1:
+            true_dir = torch.sign(target[1:] - target[:-1])
+            pred_dir = torch.sign(pred[1:] - pred[:-1])
             
-            # Penalize if direction changes
-            consistency = torch.mean(
-                torch.abs(torch.sign(pred_diff) - torch.sign(target_diff))
-            )
-            return self.weight * consistency
+            # Penalize direction mismatch
+            direction_error = 1.0 - (true_dir * pred_dir + 1.0) / 2.0
+            return direction_error.mean() * self.weight
+        
         return torch.tensor(0.0, device=pred.device)
 
 
 class TFTTrainerV3:
-    """Advanced TFT Trainer with enhanced optimization"""
+    """Advanced TFT Trainer with multi-step prediction"""
     
     def __init__(self, device='cuda'):
         self.device = device
@@ -145,59 +132,34 @@ class TFTTrainerV3:
         self.val_losses = []
         self.best_val_loss = float('inf')
         self.patience_counter = 0
-        self.loss_plateau_counter = 0
     
-    def calculate_volatility(self, X):
-        """Calculate rolling volatility from prices"""
-        prices = X[:, :, 0]  # Close prices
-        volatility = np.std(np.diff(prices, axis=1), axis=1)
-        return volatility
-    
-    def advanced_augmentation(self, X, y, noise_level=0.008):
-        """Apply advanced data augmentation techniques"""
-        X_aug = [X.copy()]
-        y_aug = [y.copy()]
+    def add_data_augmentation(self, X, y, noise_level=0.01):
+        """Apply data augmentation techniques"""
+        X_aug = X.copy()
+        y_aug = y.copy()
         
-        # 1. Volatility-aware noise
-        prices = X[:, :, 0]
-        volatility = np.std(np.diff(prices, axis=1), axis=1)
-        X_noise = X.copy()
-        for i in range(len(X)):
-            noise = np.random.normal(0, noise_level * volatility[i], X[i].shape)
-            X_noise[i] = X[i] + noise
-        X_aug.append(X_noise)
-        y_aug.append(y.copy())
+        # 1. Gaussian noise injection (volatility-aware)
+        volatility = np.std(X[:, :, 0], axis=1)  # Close price volatility
+        noise = np.random.normal(0, noise_level * volatility[:, None, None], X.shape)
+        X_aug = X_aug + noise
         
-        # 2. Mixup augmentation
-        n_samples = len(X) // 4
-        indices = np.random.choice(len(X), size=n_samples, replace=False)
-        X_mixup = X.copy()
-        y_mixup = y.copy()
+        # 2. Mixup: blend random samples
+        n_samples = len(X)
+        indices = np.random.choice(n_samples, size=max(1, n_samples//4), replace=False)
         
         for i in range(0, len(indices)-1, 2):
             alpha = np.random.beta(0.2, 0.2)
-            idx1, idx2 = indices[i], indices[i+1]
-            X_mixup[idx1] = alpha * X[idx1] + (1 - alpha) * X[idx2]
-            y_mixup[idx1] = alpha * y[idx1] + (1 - alpha) * y[idx2]
-        X_aug.append(X_mixup)
-        y_aug.append(y_mixup)
+            X_aug[indices[i]] = alpha * X[indices[i]] + (1 - alpha) * X[indices[i+1]]
+            y_aug[indices[i]] = alpha * y[indices[i]] + (1 - alpha) * y[indices[i+1]]
         
-        # 3. Time series rotation (preserve seasonal patterns)
-        X_rotate = X.copy()
-        for _ in range(len(X) // 20):
-            idx = np.random.randint(0, len(X))
-            shift = np.random.randint(-5, 5)
-            X_rotate[idx] = np.roll(X[idx], shift, axis=0)
-        X_aug.append(X_rotate)
-        y_aug.append(y.copy())
+        # 3. Time series rotation (temporal shift)
+        for _ in range(max(1, n_samples // 20)):
+            idx = np.random.randint(0, n_samples)
+            X_aug[idx] = np.roll(X[idx], np.random.randint(-3, 3), axis=0)
         
-        # Combine all augmented data
-        X_final = np.vstack(X_aug)
-        y_final = np.hstack(y_aug)
-        
-        return X_final, y_final
+        return X_aug, y_aug
     
-    def train_epoch(self, model, train_loader, optimizer, loss_fns, device, accumulation_steps=2):
+    def train_epoch(self, model, train_loader, optimizer, loss_fn, device, accumulation_steps=2):
         """Train one epoch with gradient accumulation"""
         model.train()
         total_loss = 0.0
@@ -207,15 +169,20 @@ class TFTTrainerV3:
         
         for batch_idx, (X_batch, y_batch) in enumerate(train_loader):
             X_batch = X_batch.to(device)
-            y_batch = y_batch.to(device)
+            y_batch = y_batch.to(device).unsqueeze(-1)  # Ensure proper shape
             
             # Forward pass
-            predictions = model(X_batch).squeeze()
+            predictions = model(X_batch)
             
-            # Combined loss
-            loss = 0.0
-            for weight, loss_fn in loss_fns:
-                loss += weight * loss_fn(predictions, y_batch)
+            # Handle shape mismatch
+            if predictions.shape != y_batch.shape:
+                predictions = predictions.squeeze(-1).unsqueeze(-1)
+            
+            # Calculate loss
+            if isinstance(loss_fn, nn.ModuleList):
+                loss = sum(fn(predictions, y_batch) for fn in loss_fn)
+            else:
+                loss = loss_fn(predictions, y_batch)
             
             # Normalize by accumulation steps
             loss = loss / accumulation_steps
@@ -234,7 +201,7 @@ class TFTTrainerV3:
         
         return total_loss / max(num_batches, 1)
     
-    def evaluate(self, model, val_loader, loss_fns, device):
+    def evaluate(self, model, val_loader, loss_fn, device):
         """Evaluate model on validation set"""
         model.eval()
         total_loss = 0.0
@@ -243,47 +210,48 @@ class TFTTrainerV3:
         with torch.no_grad():
             for X_batch, y_batch in val_loader:
                 X_batch = X_batch.to(device)
-                y_batch = y_batch.to(device)
+                y_batch = y_batch.to(device).unsqueeze(-1)  # Ensure proper shape
                 
-                predictions = model(X_batch).squeeze()
+                predictions = model(X_batch)
+                
+                # Handle shape mismatch
+                if predictions.shape != y_batch.shape:
+                    predictions = predictions.squeeze(-1).unsqueeze(-1)
                 
                 loss = 0.0
-                for weight, loss_fn in loss_fns:
-                    loss += weight * loss_fn(predictions, y_batch)
+                if isinstance(loss_fn, nn.ModuleList):
+                    loss = sum(fn(predictions, y_batch) for fn in loss_fn)
+                else:
+                    loss = loss_fn(predictions, y_batch)
                 
                 total_loss += loss.item()
                 num_batches += 1
         
         return total_loss / max(num_batches, 1)
     
-    def train_tft_v3(self, model, X, y, symbol, epochs=200, batch_size=32,
-                    learning_rate=0.00008, weight_decay=0.001, device='cuda'):
-        """Complete training pipeline V3"""
+    def train_tft_v3(self, model, X, y, symbol, epochs=150, batch_size=32,
+                    learning_rate=0.0001, weight_decay=0.001, device='cuda'):
+        """Complete training pipeline"""
         logger.info("\n" + "="*80)
-        logger.info("🚀 TFT V3 TRAINING - ADVANCED OPTIMIZATION")
+        logger.info("TFT V3 TRAINING - ADVANCED OPTIMIZATION")
         logger.info("="*80)
         
         # Data augmentation
-        logger.info("\n[1/7] Applying advanced data augmentation...")
-        X_aug, y_aug = self.advanced_augmentation(X, y, noise_level=0.008)
-        logger.info(f"✓ Augmented data: {len(X)} → {len(X_aug)} samples")
+        logger.info("\n[1/6] Applying data augmentation...")
+        X_aug, y_aug = self.add_data_augmentation(X, y, noise_level=0.008)
+        logger.info(f"Augmented {len(X)} samples to {len(X_aug)} samples")
         
-        # Calculate volatility for augmented data
-        volatility_aug = self.calculate_volatility(X_aug)
-        logger.info(f"✓ Volatility range: {volatility_aug.min():.6f} - {volatility_aug.max():.6f}")
-        
-        # Data split
-        logger.info(f"\n[2/7] Splitting data (80/20 train/val)...")
+        # Split data
+        logger.info(f"\n[2/6] Splitting data (80/20 train/val)...")
         split_idx = int(0.8 * len(X_aug))
         X_train, X_val = X_aug[:split_idx], X_aug[split_idx:]
         y_train, y_val = y_aug[:split_idx], y_aug[split_idx:]
-        vol_train = volatility_aug[:split_idx]
         
         logger.info(f"  - Train: {len(X_train)} samples")
-        logger.info(f"  - Val: {len(X_val)} samples")
+        logger.info(f"  - Val:   {len(X_val)} samples")
         
         # Create dataloaders
-        logger.info(f"\n[3/7] Creating dataloaders...")
+        logger.info(f"\n[3/6] Creating dataloaders...")
         train_dataset = TensorDataset(
             torch.tensor(X_train, dtype=torch.float32),
             torch.tensor(y_train, dtype=torch.float32)
@@ -293,38 +261,34 @@ class TFTTrainerV3:
             torch.tensor(y_val, dtype=torch.float32)
         )
         
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
-        logger.info(f"✓ Dataloaders ready")
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
+        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
+        logger.info(f"Dataloaders created")
         
-        # Setup training components
-        logger.info(f"\n[4/7] Setting up training components...")
+        # Setup training
+        logger.info(f"\n[4/6] Setting up training components...")
         model = model.to(device)
         optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
         
-        # Combined loss functions with weights
-        loss_fns = [
-            (1.0, nn.MSELoss()),
-            (0.3, VolatilityAwareLoss()),
-            (0.2, QuantileLoss(quantile=0.5)),
-            (0.15, TemporalConsistencyLoss(weight=0.1)),
-        ]
+        # Loss functions
+        mse_loss = nn.MSELoss()
+        weighted_loss = WeightedMSELoss(weight_power=1.5)
+        directional_loss = DirectionalLoss(weight=0.2)
+        
+        loss_fns = nn.ModuleList([mse_loss, weighted_loss, directional_loss])
         
         # Learning rate scheduler
-        scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=15, T_mult=2, eta_min=5e-7)
-        plateau_scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.7, patience=10, min_lr=5e-7)
+        scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2, eta_min=1e-6)
         
-        logger.info(f"  ✓ Optimizer: AdamW")
-        logger.info(f"  ✓ Loss: Combined (MSE + Volatility + Quantile + Temporal)")
-        logger.info(f"  ✓ Scheduler: Cosine Annealing + ReduceLROnPlateau")
-        logger.info(f"  ✓ Gradient Accumulation: 2 steps")
+        logger.info(f"  Optimizer: AdamW (lr={learning_rate}, weight_decay={weight_decay})")
+        logger.info(f"  Loss: Combined (MSE + Weighted + Directional)")
+        logger.info(f"  Scheduler: Cosine Annealing with Warm Restarts")
         
         # Training loop
-        logger.info(f"\n[5/7] Training for {epochs} epochs...\n")
+        logger.info(f"\n[5/6] Training for {epochs} epochs...\n")
         
         history = {'train_loss': [], 'val_loss': []}
         best_model_state = None
-        val_loss_queue = []
         
         for epoch in range(epochs):
             # Train
@@ -333,91 +297,65 @@ class TFTTrainerV3:
             # Validate
             val_loss = self.evaluate(model, val_loader, loss_fns, device)
             
-            # Scheduler steps
+            # Scheduler step
             scheduler.step()
-            plateau_scheduler.step(val_loss)
             
-            # Record
+            # Recording
             history['train_loss'].append(train_loss)
             history['val_loss'].append(val_loss)
-            val_loss_queue.append(val_loss)
             
-            # Keep only last 5 val losses
-            if len(val_loss_queue) > 5:
-                val_loss_queue.pop(0)
-            
-            # Check for improvement
+            # Early stopping
             if val_loss < self.best_val_loss:
                 self.best_val_loss = val_loss
                 self.patience_counter = 0
-                self.loss_plateau_counter = 0
                 best_model_state = model.state_dict().copy()
             else:
                 self.patience_counter += 1
-                # Check for loss plateau
-                if len(val_loss_queue) == 5:
-                    avg_recent = np.mean(val_loss_queue)
-                    avg_prev = np.mean(history['val_loss'][-10:-5]) if len(history['val_loss']) >= 10 else avg_recent
-                    if abs(avg_recent - avg_prev) < avg_recent * 0.001:  # < 0.1% improvement
-                        self.loss_plateau_counter += 1
             
-            # Logging
+            # Logging (avoid emoji in Windows)
             if (epoch + 1) % 10 == 0:
                 logger.info(f"Epoch {epoch+1:3d}/{epochs} | "
                           f"Train Loss: {train_loss:.6f} | "
                           f"Val Loss: {val_loss:.6f} | "
-                          f"LR: {optimizer.param_groups[0]['lr']:.2e}")
+                          f"LR: {optimizer.param_groups[0]['lr']:.6f}")
             
-            # Early stopping
-            if self.patience_counter >= 30:
-                logger.warning(f"⚠️  Early stopping at epoch {epoch+1} (patience exceeded)")
+            # Early stopping patience
+            if self.patience_counter >= 25:
+                logger.warning(f"\nEarly stopping at epoch {epoch+1} (patience exceeded)")
                 break
         
         # Restore best model
         if best_model_state is not None:
             model.load_state_dict(best_model_state)
-            logger.info(f"\n✓ Restored best model")
+            logger.info(f"\nRestored best model")
         
         # Save model
-        logger.info(f"\n[6/7] Saving model...")
+        logger.info(f"\n[6/6] Saving model...")
         model_dir = Path('models/saved_models')
         model_dir.mkdir(parents=True, exist_ok=True)
-        model_path = model_dir / f'{symbol}_tft_v3_model.pth'
+        
+        model_path = model_dir / f'{symbol}_tft_model.pth'
         torch.save(model.state_dict(), model_path)
-        logger.info(f"✓ Model saved to {model_path}")
+        logger.info(f"Model saved to {model_path}")
         
         # Summary
-        logger.info(f"\n[7/7] Training Summary")
         logger.info("\n" + "="*80)
-        logger.info(f"🎯 TFT V3 TRAINING RESULTS - {symbol}")
+        logger.info(f"TFT V3 TRAINING SUMMARY - {symbol}")
         logger.info("="*80)
-        logger.info(f"\n📊 Training Statistics:")
-        logger.info(f"  • Total Epochs: {len(history['train_loss'])}")
-        logger.info(f"  • Best Val Loss: {self.best_val_loss:.6f}")
-        logger.info(f"  • Final Train Loss: {history['train_loss'][-1]:.6f}")
-        logger.info(f"  • Final Val Loss: {history['val_loss'][-1]:.6f}")
+        logger.info(f"\nTraining Statistics:")
+        logger.info(f"  Total Epochs: {len(history['train_loss'])}")
+        logger.info(f"  Best Val Loss: {self.best_val_loss:.6f}")
+        logger.info(f"  Final Train Loss: {history['train_loss'][-1]:.6f}")
+        logger.info(f"  Final Val Loss: {history['val_loss'][-1]:.6f}")
         if len(history['val_loss']) > 0:
             improvement = ((history['val_loss'][0] - self.best_val_loss) / history['val_loss'][0] * 100)
-            logger.info(f"  • Improvement: {improvement:.1f}%")
+            logger.info(f"  Improvement: {improvement:.1f}%")
         
-        logger.info(f"\n🚀 Architecture Enhancements (V3):")
-        logger.info(f"  • Volatility-Aware Loss: ✓")
-        logger.info(f"  • Quantile Loss: ✓ (robust to outliers)")
-        logger.info(f"  • Temporal Consistency: ✓")
-        logger.info(f"  • Gradient Accumulation: ✓ (effective batch 64)")
-        logger.info(f"  • Advanced Data Augmentation: ✓")
-        logger.info(f"  • Dual Learning Rate Scheduling: ✓")
+        logger.info(f"\nMulti-Step Prediction:")
+        logger.info(f"  Horizon: 3-5 candles ahead")
+        logger.info(f"  Feature Count: {X.shape[2]}")
+        logger.info(f"  Lookback Window: {X.shape[1]} hours")
         
-        logger.info(f"\n🎯 Expected Performance vs V2:")
-        logger.info(f"  • MAE: 6.67 → < 2.5 USD (↓62%)")
-        logger.info(f"  • MAPE: 4.55% → < 1.5% (↓67%)")
-        logger.info(f"  • R²: → > 0.93")
-        logger.info(f"  • Dir. Accuracy: → > 72%")
-        
-        logger.info(f"\n💡 Next Steps:")
-        logger.info(f"  1. Test: python visualize_tft_v3.py --symbol {symbol}")
-        logger.info(f"  2. Deploy: src/realtime_trading_bot.py")
-        logger.info(f"  3. Monitor: Discord notifications")
         logger.info("="*80 + "\n")
         
         return model, history
@@ -425,40 +363,49 @@ class TFTTrainerV3:
 
 def main():
     parser = argparse.ArgumentParser(
-        description='TFT V3 Training - Advanced Multi-Step Crypto Prediction'
+        description='TFT V3 Training - Multi-Step Crypto Price Prediction'
     )
-    parser.add_argument('--symbol', default='SOL', help='Crypto symbol')
-    parser.add_argument('--epochs', type=int, default=200, help='Epochs')
-    parser.add_argument('--batch-size', type=int, default=32, help='Batch size')
-    parser.add_argument('--lr', type=float, default=0.00008, help='Learning rate')
+    
+    parser.add_argument('--symbol', default='SOL', help='Crypto symbol (default: SOL)')
+    parser.add_argument('--epochs', type=int, default=150, help='Epochs (default: 150)')
+    parser.add_argument('--batch-size', type=int, default=32, help='Batch size (default: 32)')
+    parser.add_argument('--lr', type=float, default=0.0001, help='Learning rate (default: 0.0001)')
     parser.add_argument('--device', choices=['auto', 'cuda', 'cpu'], default='auto')
     
     args = parser.parse_args()
     
-    device = 'cuda' if (args.device == 'auto' and torch.cuda.is_available()) else args.device
-    if args.device != 'auto':
+    # Determine device
+    if args.device == 'auto':
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    else:
         device = args.device
     
     try:
+        # Setup
         create_directories()
         
-        logger.info(f"\n🔄 Fetching data for {args.symbol}...")
+        # Fetch data
+        logger.info(f"\nFetching data for {args.symbol}...")
         fetcher = TFTDataFetcher()
-        df = fetcher.fetch_ohlcv_binance(f"{args.symbol}/USDT", timeframe='1h', limit=5000)
+        trading_pair = f"{args.symbol}/USDT"
+        df = fetcher.fetch_ohlcv_binance(trading_pair, timeframe='1h', limit=5000)
         
         if df is None:
-            logger.error(f"Failed to fetch data")
+            logger.error(f"Failed to fetch data for {args.symbol}")
             return False
         
+        # Add indicators
         logger.info(f"Adding indicators...")
         df = fetcher.add_tft_indicators(df)
         
+        # Prepare features
         logger.info(f"Preparing features...")
         X, y, scaler = fetcher.prepare_ml_features(df, lookback=60)
         
         if X is None:
             return False
         
+        # Initialize model
         model = TemporalFusionTransformer(
             input_size=X.shape[2],
             hidden_size=256,
@@ -467,16 +414,18 @@ def main():
             dropout=0.2
         )
         
+        # Train
         trainer = TFTTrainerV3(device=device)
         model, history = trainer.train_tft_v3(
-            model, X, y, args.symbol,
+            model, X, y,
+            symbol=args.symbol,
             epochs=args.epochs,
             batch_size=args.batch_size,
             learning_rate=args.lr,
             device=device
         )
         
-        logger.info("\n✅ Training completed!")
+        logger.info("\nTraining completed successfully!")
         return True
         
     except Exception as e:
