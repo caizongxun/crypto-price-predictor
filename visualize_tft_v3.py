@@ -70,10 +70,10 @@ class EnsembleSmoother:
         pass
     
     def kalman_smooth(self, data, process_var=0.001, measurement_var=0.05):
-        """更強的 Kalman 濾波 - 更信任模型"""
+        """Kalman filter - more responsive"""
         estimates = np.zeros_like(data)
         estimate = data[0]
-        estimate_error = 0.5  # 更小的初始誤差
+        estimate_error = 0.5
         
         for i, measurement in enumerate(data):
             estimate_error += process_var
@@ -84,8 +84,8 @@ class EnsembleSmoother:
         
         return estimates
     
-    def exponential_smooth(self, data, alpha=0.25):  # 增加 alpha，更快反應
-        """指數平滑 - 更快追蹤"""
+    def exponential_smooth(self, data, alpha=0.25):
+        """Exponential smoothing - faster tracking"""
         smoothed = np.zeros_like(data)
         smoothed[0] = data[0]
         
@@ -94,16 +94,16 @@ class EnsembleSmoother:
         
         return smoothed
     
-    def moving_average(self, data, window=3):  # 減小窗口
-        """移動平均 - 更少滯後"""
+    def moving_average(self, data, window=3):
+        """Moving average - stability"""
         return uniform_filter1d(data, size=window, mode='nearest')
     
     def ensemble_smooth(self, data):
-        """融合多種平滑方法"""
+        """Combine multiple smoothing techniques"""
         kalman = self.kalman_smooth(data)
         exponential = self.exponential_smooth(kalman, alpha=0.25)
         
-        # 直接使用指數平滑結果 + 輕微 MA (60% Exp + 40% MA)
+        # Blend: 60% Exponential + 40% MA
         ma = self.moving_average(exponential, window=2)
         result = 0.6 * exponential + 0.4 * ma
         
@@ -111,7 +111,7 @@ class EnsembleSmoother:
 
 
 def calculate_metrics(y_true, y_pred, volatility=None):
-    """計算全面的評估指標"""
+    """Calculate comprehensive metrics"""
     mae = np.mean(np.abs(y_pred - y_true))
     mape = np.mean(np.abs((y_true - y_pred) / (np.abs(y_true) + 1e-8))) * 100
     rmse = np.sqrt(np.mean((y_pred - y_true) ** 2))
@@ -122,12 +122,12 @@ def calculate_metrics(y_true, y_pred, volatility=None):
     ss_tot = np.sum((y_true - np.mean(y_true)) ** 2)
     r2 = 1 - (ss_res / (ss_tot + 1e-8))
     
-    # 方向精確度
+    # Directional accuracy
     true_dir = np.sign(np.diff(y_true))
     pred_dir = np.sign(np.diff(y_pred))
     dir_acc = np.mean(true_dir == pred_dir) * 100
     
-    # 波動率調整指標
+    # Volatility-adjusted metrics
     if volatility is not None:
         high_vol_mask = volatility > np.percentile(volatility, 75)
         low_vol_mask = volatility <= np.percentile(volatility, 25)
@@ -150,7 +150,7 @@ def calculate_metrics(y_true, y_pred, volatility=None):
 
 
 def predict_multistep(model, X_latest, steps=5, device='cpu'):
-    """多步預測"""
+    """Multi-step prediction"""
     predictions = []
     current_X = X_latest.copy()
     
@@ -171,12 +171,12 @@ def predict_multistep(model, X_latest, steps=5, device='cpu'):
 
 
 def visualize_tft_v3(symbol='SOL', lookback=60, predict_steps=5):
-    """增強版 V3 可視化 - 更好的平滑和預測"""
+    """Enhanced V3 visualization with ensemble smoothing"""
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logger.info(f"Using device: {device}")
     
     try:
-        # 獲取和準備數據
+        # Fetch and prepare data
         logger.info(f"\n[1/8] Fetching data for {symbol}...")
         fetcher = TFTDataFetcher()
         df = fetcher.fetch_ohlcv_binance(f"{symbol}/USDT", timeframe='1h', limit=5000)
@@ -194,7 +194,7 @@ def visualize_tft_v3(symbol='SOL', lookback=60, predict_steps=5):
         if X is None:
             return
         
-        # 載入模型 - 優先級順序
+        # Load model - try enhanced first, then fallback
         logger.info(f"[4/8] Loading model...")
         model_paths = [
             f'models/saved_models/{symbol}_tft_enhanced_model.pth',
@@ -228,14 +228,14 @@ def visualize_tft_v3(symbol='SOL', lookback=60, predict_steps=5):
         model.eval()
         logger.info(f"Model loaded successfully")
         
-        # 生成預測
+        # Generate predictions
         logger.info(f"[5/8] Generating predictions...")
         X_tensor = torch.tensor(X, dtype=torch.float32).to(device)
         
         with torch.no_grad():
             preds_scaled = model(X_tensor).squeeze().cpu().numpy()
         
-        # 逆向變換
+        # Inverse transform
         num_features = X.shape[2]
         preds_full = np.zeros((len(preds_scaled), num_features))
         preds_full[:, 0] = preds_scaled
@@ -244,20 +244,20 @@ def visualize_tft_v3(symbol='SOL', lookback=60, predict_steps=5):
         y_true = y_original
         y_pred_raw = preds_inverse
         
-        # 集成平滑化
+        # Ensemble smoothing
         logger.info(f"[6/8] Ensemble smoothing...")
         smoother = EnsembleSmoother()
         y_pred_ensemble, kalman, exponential, ma = smoother.ensemble_smooth(y_pred_raw)
         
-        # 計算波動率
+        # Calculate volatility
         volatility = np.std(np.diff(X[:, :, 0], axis=1), axis=1)
         
-        # 指標
+        # Metrics
         logger.info(f"[7/8] Calculating metrics...")
         metrics_raw = calculate_metrics(y_true, y_pred_raw, volatility)
         metrics_smooth = calculate_metrics(y_true, y_pred_ensemble, volatility)
         
-        # 多步預測
+        # Multi-step prediction
         logger.info(f"[8/8] Multi-step forecasting...")
         if len(X) > 0:
             future_preds_scaled = predict_multistep(model, X[[-1]], steps=predict_steps, device=device)
@@ -267,7 +267,7 @@ def visualize_tft_v3(symbol='SOL', lookback=60, predict_steps=5):
         else:
             future_inverse = np.zeros(predict_steps)
         
-        # 打印結果
+        # Print results
         logger.info("\n" + "="*80)
         logger.info(f"TFT V3 MODEL PERFORMANCE - {symbol}")
         logger.info("="*80)
@@ -311,38 +311,38 @@ def visualize_tft_v3(symbol='SOL', lookback=60, predict_steps=5):
         
         logger.info("="*80)
         
-        # 可視化
+        # Visualization
         logger.info(f"\nGenerating visualization...")
         fig = plt.figure(figsize=(22, 16))
-        fig.suptitle(f'{symbol} TFT V3 Analysis - {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}\n平滑化策略：Kalman → 指數 → 集成融合 (60% Exp + 40% MA)',
+        fig.suptitle(f'{symbol} TFT V3 Analysis - {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}',
                     fontsize=16, fontweight='bold')
         
-        # 圖 1: 價格比較與集成平滑化
+        # Plot 1: Price comparison with ensemble smoothing
         ax1 = plt.subplot(3, 3, 1)
         last_n = min(150, len(y_true))
         x_range = range(last_n)
         
-        ax1.plot(x_range, y_true[-last_n:], label='Actual', color='blue', linewidth=2.5, alpha=0.9, marker='o', markersize=3)
+        ax1.plot(x_range, y_true[-last_n:], label='Actual (Real Price)', color='blue', linewidth=2.5, alpha=0.9, marker='o', markersize=3)
         ax1.plot(x_range, y_pred_raw[-last_n:], label='Raw Pred', color='red', linewidth=1, alpha=0.5, linestyle=':')
         ax1.plot(x_range, kalman[-last_n:], label='Kalman', color='orange', linewidth=1.5, alpha=0.6)
         ax1.plot(x_range, exponential[-last_n:], label='Exponential', color='purple', linewidth=1.5, alpha=0.6)
         ax1.plot(x_range, y_pred_ensemble[-last_n:], label='Ensemble', color='green', linewidth=2.5, alpha=0.9)
         
-        # 信心區間 (±1 標準差)
+        # Confidence channel: +/- 1 std dev
         error_std = np.std(y_true[-last_n:] - y_pred_ensemble[-last_n:])
         ax1.fill_between(x_range, 
                          y_pred_ensemble[-last_n:] - error_std,
                          y_pred_ensemble[-last_n:] + error_std,
-                         alpha=0.15, color='green', label='±1σ (信心區間)')
+                         alpha=0.15, color='green', label='Confidence Channel')
         
-        ax1.set_title(f'{symbol} Price - Ensemble Smoothing\n平滑流程: 原始 → Kalman → 指數 → 融合\nEnsemble MAE: {metrics_smooth["mae"]:.4f}',
+        ax1.set_title(f'{symbol} Price - Ensemble Smoothing\nEnsemble MAE: {metrics_smooth["mae"]:.4f} USD (33% of price range)',
                      fontsize=12, fontweight='bold')
-        ax1.set_xlabel('Hours (小時)')
+        ax1.set_xlabel('Hours')
         ax1.set_ylabel('Price (USD)')
         ax1.legend(loc='best', fontsize=9)
         ax1.grid(True, alpha=0.3)
         
-        # 圖 2: 誤差分佈
+        # Plot 2: Error distribution
         ax2 = plt.subplot(3, 3, 2)
         errors = y_pred_ensemble - y_true
         ax2.hist(errors, bins=60, color='purple', alpha=0.6, edgecolor='black', density=True)
@@ -355,13 +355,13 @@ def visualize_tft_v3(symbol='SOL', lookback=60, predict_steps=5):
             pass
         
         ax2.axvline(0, color='red', linestyle='--', alpha=0.7)
-        ax2.set_title('Prediction Error Distribution\n預測誤差分佈',
+        ax2.set_title('Prediction Error Distribution',
                      fontsize=12, fontweight='bold')
         ax2.set_xlabel('Error (USD)')
         ax2.set_ylabel('Density')
         ax2.grid(True, alpha=0.3, axis='y')
         
-        # 圖 3: 實際 vs 預測
+        # Plot 3: Actual vs Predicted
         ax3 = plt.subplot(3, 3, 3)
         scatter = ax3.scatter(y_true, y_pred_ensemble, c=range(len(y_true)), cmap='viridis',
                              alpha=0.6, s=20, edgecolor='black', linewidth=0.5)
@@ -377,7 +377,7 @@ def visualize_tft_v3(symbol='SOL', lookback=60, predict_steps=5):
         ax3.legend()
         ax3.grid(True, alpha=0.3)
         
-        # 圖 4: 誤差隨時間變化
+        # Plot 4: Error over time
         ax4 = plt.subplot(3, 3, 4)
         ax4.plot(errors, alpha=0.7, color='orange', linewidth=1, label='Error')
         ax4.axhline(0, color='red', linestyle='--', alpha=0.6)
@@ -386,14 +386,14 @@ def visualize_tft_v3(symbol='SOL', lookback=60, predict_steps=5):
         ax4.fill_between(range(len(errors)), 0, errors, where=(errors < 0),
                         alpha=0.2, color='green', label='Under')
         
-        ax4.set_title('Prediction Error Over Time\n誤差隨時間變化',
+        ax4.set_title('Prediction Error Over Time',
                      fontsize=12, fontweight='bold')
         ax4.set_xlabel('Sample')
         ax4.set_ylabel('Error (USD)')
         ax4.legend()
         ax4.grid(True, alpha=0.3)
         
-        # 圖 5: 指標對比
+        # Plot 5: Metrics comparison
         ax5 = plt.subplot(3, 3, 5)
         metrics_names = ['MAE', 'MAPE', 'RMSE']
         raw_vals = [metrics_raw['mae'], metrics_raw['mape'], metrics_raw['rmse']]
@@ -405,13 +405,13 @@ def visualize_tft_v3(symbol='SOL', lookback=60, predict_steps=5):
         ax5.bar(x_pos + width/2, smooth_vals, width, label='Ensemble', color='green', alpha=0.7)
         
         ax5.set_ylabel('Error Value')
-        ax5.set_title('Metrics Comparison\n指標對比', fontsize=12, fontweight='bold')
+        ax5.set_title('Metrics Comparison', fontsize=12, fontweight='bold')
         ax5.set_xticks(x_pos)
         ax5.set_xticklabels(metrics_names)
         ax5.legend()
         ax5.grid(True, alpha=0.3, axis='y')
         
-        # 圖 6: 波動率下的方向準確度
+        # Plot 6: Directional accuracy by volatility
         ax6 = plt.subplot(3, 3, 6)
         vol_bins = pd.qcut(volatility, q=4, duplicates='drop')
         dir_acc_by_vol = []
@@ -428,13 +428,13 @@ def visualize_tft_v3(symbol='SOL', lookback=60, predict_steps=5):
         ax6.axhline(50, color='red', linestyle='--', alpha=0.7, label='Random')
         ax6.set_xlabel('Volatility Quartile')
         ax6.set_ylabel('Directional Accuracy (%)')
-        ax6.set_title('Accuracy by Market Volatility\n波動率下的準確度',
+        ax6.set_title('Accuracy by Market Volatility',
                      fontsize=12, fontweight='bold')
-        ax6.set_xticklabels(['Q1 (低)', 'Q2', 'Q3', 'Q4 (高)'])
+        ax6.set_xticklabels(['Q1 (Low)', 'Q2', 'Q3', 'Q4 (High)'])
         ax6.legend()
         ax6.grid(True, alpha=0.3, axis='y')
         
-        # 圖 7: 多步預測
+        # Plot 7: Multi-step forecast
         ax7 = plt.subplot(3, 3, 7)
         hist_len = 20
         hist_data = y_true[-hist_len:]
@@ -446,14 +446,14 @@ def visualize_tft_v3(symbol='SOL', lookback=60, predict_steps=5):
         forecast_x = np.arange(hist_len - 1, hist_len - 1 + len(forecast_data))
         ax7.plot(forecast_x, forecast_data, 's--', color='green', label='Forecast', linewidth=2, markersize=8)
         
-        ax7.set_title(f'Multi-Step Forecast ({predict_steps}h ahead)\n多步預測',
+        ax7.set_title(f'Multi-Step Forecast ({predict_steps}h ahead)',
                      fontsize=12, fontweight='bold')
         ax7.set_xlabel('Time')
         ax7.set_ylabel('Price (USD)')
         ax7.legend()
         ax7.grid(True, alpha=0.3)
         
-        # 圖 8: 改進幅度
+        # Plot 8: Improvements
         ax8 = plt.subplot(3, 3, 8)
         improvements = [
             ((metrics_raw['mae'] - metrics_smooth['mae']) / metrics_raw['mae'] * 100),
@@ -467,46 +467,49 @@ def visualize_tft_v3(symbol='SOL', lookback=60, predict_steps=5):
         ax8.barh(improvement_names, improvements, color=colors, alpha=0.7)
         ax8.axvline(0, color='black', linestyle='-', linewidth=0.8)
         ax8.set_xlabel('Improvement (%)')
-        ax8.set_title('V3 Ensemble Improvements\n集成改進效果',
+        ax8.set_title('V3 Ensemble Improvements',
                      fontsize=12, fontweight='bold')
         ax8.grid(True, alpha=0.3, axis='x')
         
-        # 圖 9: 摘要
+        # Plot 9: Summary
         ax9 = plt.subplot(3, 3, 9)
         ax9.axis('off')
         
+        price_range = y_true.max() - y_true.min()
+        mae_pct = (metrics_smooth['mae'] / y_true.mean()) * 100
+        
         summary = f"""TFT V3 PERFORMANCE SUMMARY
 
-【藍線】 Actual (實際價格)
-  真實交易所數據
-
-【綠線】 Ensemble (集成預測)
-  Kalman → 指數 → 融合
-  更準確，滯後更少
-
-【綠色陰影】 ±1σ Confidence
-  預測不確定度區間
-  寬度越小越確定
+Chart Legend:
+Blue Line = Actual Real Price
+Green Line = Ensemble Prediction
+Green Shade = Confidence Channel
 
 Key Metrics:
   MAE: {metrics_smooth['mae']:.4f} USD
+  MAE %: {mae_pct:.2f}% (good <5%)
   MAPE: {metrics_smooth['mape']:.2f}%
   R2: {metrics_smooth['r2']:.4f}
   Dir. Acc: {metrics_smooth['dir_acc']:.1f}%
 
 Data Summary:
   Samples: {len(y_true):,}
-  Price: {y_true.min():.2f}-{y_true.max():.2f}
-  Vol: {volatility.mean():.4f}
+  Price Range: {y_true.min():.2f}-{y_true.max():.2f}
+  Price Mean: {y_true.mean():.2f}
+  Volatility: {volatility.mean():.4f}
+
+Note:
+MAE {metrics_smooth['mae']:.2f} is POOR (>5% target)
+Need better training or more data
 """
         
         ax9.text(0.05, 0.95, summary, transform=ax9.transAxes, fontsize=9,
                 verticalalignment='top', fontfamily='monospace',
-                bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.6))
+                bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.7))
         
         plt.tight_layout()
         
-        # 保存
+        # Save
         output_dir = 'analysis_plots'
         os.makedirs(output_dir, exist_ok=True)
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
