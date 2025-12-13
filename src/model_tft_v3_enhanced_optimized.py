@@ -73,13 +73,23 @@ class MultiHeadAttention(nn.Module):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
-            query, key, value: (batch, seq_len, hidden_size)
+            query, key, value: (batch, seq_len, hidden_size) or (batch, hidden_size)
             mask: Optional attention mask
         
         Returns:
-            output: (batch, seq_len, hidden_size)
+            output: Same shape as input query
             attention: attention weights
         """
+        # Handle both 2D and 3D inputs
+        if query.dim() == 2:
+            # (batch, hidden_size) -> add seq_len=1
+            query = query.unsqueeze(1)
+            key = key.unsqueeze(1)
+            value = value.unsqueeze(1)
+        
+        if query.dim() != 3:
+            raise ValueError(f"Expected query to be 2D or 3D, got {query.dim()}D with shape {query.shape}")
+        
         batch_size, seq_len, _ = query.shape
         
         # Linear projections
@@ -343,6 +353,9 @@ class TemporalFusionTransformerV3EnhancedOptimized(nn.Module):
             Else:
                 dict with 'price', 'direction', 'multistep'
         """
+        if x.dim() != 3:
+            raise ValueError(f"Expected input to be 3D (batch, seq_len, features), got {x.dim()}D with shape {x.shape}")
+        
         batch_size, seq_len, _ = x.shape
         device = x.device
         
