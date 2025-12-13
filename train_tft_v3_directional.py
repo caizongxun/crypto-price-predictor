@@ -222,7 +222,7 @@ class TFTDirectionalTrainer:
         scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2, eta_min=1e-6)
         
         # Use improved loss function with heavier direction weighting
-        loss_fn = DirectionalLossV3(direction_weight=2.0)  # Increased from 0.5
+        loss_fn = DirectionalLossV3(direction_weight=2.0, device=device)  # Pass device here
         
         logger.info(f"  Optimizer: AdamW (lr={learning_rate})")
         logger.info(f"  Loss: Combined (Normalized MSE + Weighted Direction CE)")
@@ -251,11 +251,9 @@ class TFTDirectionalTrainer:
             history['val_dir_acc'].append(val_dir_acc)
             
             # Early stopping (track best dir acc instead of loss)
-            if val_dir_acc > (self.best_val_loss - 0.5):  # Use dir acc as primary metric
-                if val_loss < self.best_val_loss or val_dir_acc > max(history['val_dir_acc'][:-1]) if len(history['val_dir_acc']) > 1 else True:
-                    self.best_val_loss = max(val_dir_acc, self.best_val_loss - 0.5)
-                    self.patience_counter = 0
-                    best_model_state = model.state_dict().copy()
+            if len(history['val_dir_acc']) == 1 or val_dir_acc > max(history['val_dir_acc'][:-1]):
+                self.patience_counter = 0
+                best_model_state = model.state_dict().copy()
             else:
                 self.patience_counter += 1
             
