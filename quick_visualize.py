@@ -18,7 +18,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from src.data_fetcher_tft import TFTDataFetcher
+from src.data_fetcher_tft_v3 import TFTDataFetcher
 
 
 def create_sample_predictions(y_actual, noise_level=0.15):
