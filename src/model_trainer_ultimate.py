@@ -11,6 +11,7 @@ Key Features:
 - K-fold cross-validation support
 - Learning rate warmup + cosine annealing
 - Gradient accumulation for stable training
+- Automatic Model Backup & Overwrite System
 """
 
 import os
@@ -24,6 +25,8 @@ import logging
 from typing import Tuple, List
 from sklearn.preprocessing import StandardScaler
 import math
+import shutil
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -315,6 +318,28 @@ class UltimateModelTrainer:
         self.scaler = torch.amp.GradScaler() if self.device.type == 'cuda' else None
         logger.info(f"Using device: {self.device}")
     
+    def backup_old_model(self, symbol: str):
+        """Backup existing model before overwriting"""
+        model_dir = Path('models/saved_models')
+        backup_dir = Path('models/saved_models_backup')
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        
+        # The standard model name (always the same)
+        model_name = f"{symbol}_model.pth"
+        model_path = model_dir / model_name
+        
+        if model_path.exists():
+            # Create timestamped backup
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup_name = f"{symbol}_model_{timestamp}.pth"
+            backup_path = backup_dir / backup_name
+            
+            try:
+                shutil.copy2(model_path, backup_path)
+                logger.info(f"Old model backed up to: {backup_path}")
+            except Exception as e:
+                logger.error(f"Failed to backup model: {e}")
+    
     def prepare_data(
         self,
         X: np.ndarray,
@@ -358,6 +383,7 @@ class UltimateModelTrainer:
         self,
         X: np.ndarray,
         y: np.ndarray,
+        symbol: str = "BTC",  # Added symbol parameter for saving
         epochs: int = 200,
         batch_size: int = 32,
         learning_rate: float = 0.0001,
@@ -415,6 +441,9 @@ class UltimateModelTrainer:
         logger.info(f"  - Batch Size: {batch_size} | Gradient Accumulation: {accumulation_steps}")
         logger.info(f"  - Epochs: {epochs} | Early Stopping Patience: {patience}")
         logger.info("\n" + "="*80)
+        
+        # Backup old model before training
+        self.backup_old_model(symbol)
         
         for epoch in range(1, epochs + 1):
             # Training phase
@@ -490,10 +519,14 @@ class UltimateModelTrainer:
                     f"LR: {lr:.2e}"
                 )
             
-            # Early stopping
-            if val_loss < best_val_loss * 0.9995:  # Only count improvement > 0.05%
+            # Save best model directly to the standard filename (overwriting)
+            if val_loss < best_val_loss * 0.9995:
                 best_val_loss = val_loss
                 patience_counter = 0
+                
+                # Save as standard model name (e.g., SOL_model.pth)
+                save_path = Path('models/saved_models') / f"{symbol}_model.pth"
+                torch.save(ensemble_model.state_dict(), save_path)
             else:
                 patience_counter += 1
             
@@ -505,7 +538,8 @@ class UltimateModelTrainer:
         logger.info(f"Training completed!")
         logger.info(f"  - Best validation loss: {best_val_loss:.6f}")
         logger.info(f"  - Final overfitting ratio: {training_history['overfitting_ratio'][-1]:.3f}")
-        logger.info(f"  - Target: < 1.3 (Current: {training_history['overfitting_ratio'][-1]:.3f})")
+        logger.info(f"  - Model saved to: models/saved_models/{symbol}_model.pth")
+        logger.info(f"  - Old model backed up to: models/saved_models_backup/")
         logger.info("="*80 + "\n")
         
         return ensemble_model, training_history
