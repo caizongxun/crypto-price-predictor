@@ -10,10 +10,11 @@ Features:
 - Volatility-aware training
 - Performance metrics: MAE, MAPE, Direction Accuracy
 - Automatic model checkpointing
+- GPU memory optimized
 
 Usage:
   python train_tft_v3_multistep.py --symbol SOL --epochs 100
-  python train_tft_v3_multistep.py --symbol BTC --lr 0.0005 --batch-size 32
+  python train_tft_v3_multistep.py --symbol BTC --lr 0.0005 --batch-size 16
 """
 
 import os
@@ -130,7 +131,7 @@ class MultiStepTrainer:
         
         return directions
     
-    def train_epoch(self, X_train, y_train, y_train_multistep, batch_size: int = 32):
+    def train_epoch(self, X_train, y_train, y_train_multistep, batch_size: int = 16):
         """Train one epoch"""
         self.model.train()
         total_loss = 0
@@ -179,10 +180,10 @@ class MultiStepTrainer:
         total_loss = 0
         
         with torch.no_grad():
-            for i in range(0, len(X_val), 32):
-                X_batch = X_val[i:i+32]
-                y_batch = y_val[i:i+32]
-                y_multistep_batch = y_val_multistep[i:i+32]
+            for i in range(0, len(X_val), 16):
+                X_batch = X_val[i:i+16]
+                y_batch = y_val[i:i+16]
+                y_multistep_batch = y_val_multistep[i:i+16]
                 
                 predictions = self.model(X_batch, return_full_forecast=True)
                 y_prev = X_batch[:, -1:, 0].unsqueeze(-1)
@@ -199,7 +200,7 @@ class MultiStepTrainer:
                 
                 total_loss += loss.item()
         
-        return total_loss / max(1, (len(X_val) + 31) // 32)
+        return total_loss / max(1, (len(X_val) + 15) // 16)
     
     def compute_metrics(self, X_val, y_val_original):
         """Compute evaluation metrics"""
@@ -240,7 +241,7 @@ class MultiStepTrainer:
         self,
         symbol: str,
         epochs: int = 100,
-        batch_size: int = 32,
+        batch_size: int = 16,
         early_stopping_patience: int = 20
     ):
         """Full training loop"""
@@ -269,6 +270,7 @@ class MultiStepTrainer:
         
         logger.info(f"  Train samples: {len(X_train)}")
         logger.info(f"  Val samples: {len(X_val)}")
+        logger.info(f"  Batch size: {batch_size}")
         
         best_val_loss = float('inf')
         patience_counter = 0
@@ -347,10 +349,10 @@ def main():
     parser = argparse.ArgumentParser(description='Train TFT V3 Multi-Step Forecaster')
     parser.add_argument('--symbol', type=str, default='SOL', help='Crypto symbol')
     parser.add_argument('--epochs', type=int, default=100, help='Number of epochs')
-    parser.add_argument('--batch-size', type=int, default=32, help='Batch size')
+    parser.add_argument('--batch-size', type=int, default=16, help='Batch size (default: 16 for GPU memory)')
     parser.add_argument('--lr', type=float, default=0.001, help='Learning rate')
-    parser.add_argument('--hidden-size', type=int, default=256, help='Hidden size')
-    parser.add_argument('--num-layers', type=int, default=3, help='Number of transformer layers')
+    parser.add_argument('--hidden-size', type=int, default=128, help='Hidden size (reduced for GPU memory)')
+    parser.add_argument('--num-layers', type=int, default=2, help='Number of transformer layers (reduced for GPU memory)')
     parser.add_argument('--dropout', type=float, default=0.2, help='Dropout rate')
     parser.add_argument('--forecast-steps', type=int, default=5, help='Steps to forecast ahead')
     parser.add_argument('--lookback', type=int, default=60, help='Lookback period')
@@ -360,18 +362,24 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logger.info(f"Using device: {device}")
     
-    # Model initialization - FIXED: use input_size=44 (actual feature count from data fetcher)
+    # Clear GPU cache before training
+    if device.type == 'cuda':
+        torch.cuda.empty_cache()
+    
+    # Model initialization - GPU memory optimized
     model = TemporalFusionTransformerV3EnhancedOptimized(
-        input_size=44,  # ✅ FIXED: Was 8, should be 44 (actual feature count)
-        hidden_size=args.hidden_size,
+        input_size=44,
+        hidden_size=args.hidden_size,  # Reduced: 128 instead of 256
         num_heads=8,
-        num_layers=args.num_layers,
+        num_layers=args.num_layers,    # Reduced: 2 instead of 3
         dropout=args.dropout,
         output_size=1,
         forecast_steps=args.forecast_steps,
         use_direction_head=True,
         use_multistep_head=True
     ).to(device)
+    
+    logger.info(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
     
     loss_fn = EnhancedOptimizedLoss(device=str(device), use_direction_loss=True).to(device)
     optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-5)
