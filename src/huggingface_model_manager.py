@@ -4,6 +4,7 @@ import os
 import logging
 from typing import Optional, Dict
 from pathlib import Path
+import torch
 
 try:
     from huggingface_hub import hf_hub_download, HfApi, login
@@ -11,8 +12,6 @@ except ImportError:
     raise ImportError(
         "huggingface_hub not installed. Install with: pip install huggingface_hub"
     )
-
-import torch
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +96,7 @@ class HuggingFaceModelManager:
             return False
         
         try:
-            api = HfApi()
+            api = HfApi(token=self.hf_token)
             local_path = Path(local_dir)
             
             if not local_path.exists():
@@ -115,8 +114,9 @@ class HuggingFaceModelManager:
             # Create repo if doesn't exist
             try:
                 api.create_repo(repo_id=self.repo_id, exist_ok=True, private=False)
+                logger.info(f"✅ Repository {self.repo_id} ready")
             except Exception as e:
-                logger.warning(f"Repo creation info: {e}")
+                logger.warning(f"Repository creation info: {e}")
             
             # Upload each model file
             for model_file in model_files:
@@ -130,7 +130,6 @@ class HuggingFaceModelManager:
                     logger.info(f"✅ Uploaded {model_file.name}")
                 except Exception as e:
                     logger.error(f"❌ Failed to upload {model_file.name}: {e}")
-                    return False
             
             logger.info(f"✅ Successfully uploaded all models to {self.repo_id}")
             return True
@@ -139,19 +138,22 @@ class HuggingFaceModelManager:
             logger.error(f"❌ Upload failed: {e}")
             return False
     
-    def load_model_from_hf(self, symbol: str, device: torch.device, 
+    def load_model_from_hf(self, symbol: str, device: torch.device = None,
                           model_type: str = "lstm") -> Optional[torch.nn.Module]:
         """
         Download and load model from Hugging Face.
         
         Args:
             symbol: Cryptocurrency symbol (e.g., "BTC")
-            device: PyTorch device (cpu or cuda)
+            device: PyTorch device (cpu or cuda), auto-detect if None
             model_type: Type of model ("lstm" or "transformer")
             
         Returns:
             Loaded PyTorch model or None if loading failed
         """
+        if device is None:
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            
         try:
             # Download model
             model_path = self.download_model(symbol, model_type)
@@ -162,7 +164,7 @@ class HuggingFaceModelManager:
             # Import model classes
             from .model_trainer import LSTMModel, TransformerModel
             
-            # Create model architecture
+            # Create model architecture - match your training config
             if model_type == "lstm":
                 model = LSTMModel(
                     input_size=17,
@@ -186,7 +188,7 @@ class HuggingFaceModelManager:
             # Load weights
             try:
                 state_dict = torch.load(model_path, map_location=device)
-                model.load_state_dict(state_dict)
+                model.load_state_dict(state_dict, strict=False)
                 model.to(device)
                 model.eval()
                 logger.info(f"✅ Loaded {symbol} {model_type} model from HF")
@@ -208,12 +210,13 @@ class HuggingFaceModelManager:
         """
         try:
             api = HfApi()
-            repo_info = api.repo_info(repo_id=self.repo_id)
+            repo_info = api.repo_info(repo_id=self.repo_id, repo_type="model")
             return {
                 'repo_id': self.repo_id,
                 'url': f"https://huggingface.co/{self.repo_id}",
-                'last_modified': repo_info.last_modified,
-                'siblings': len(repo_info.siblings) if repo_info.siblings else 0
+                'private': repo_info.private,
+                'last_modified': str(repo_info.last_modified),
+                'files_count': len(repo_info.siblings) if repo_info.siblings else 0
             }
         except Exception as e:
             logger.error(f"❌ Failed to get repo info: {e}")
@@ -243,6 +246,8 @@ def download_crypto_models(symbols: list = None,
         path = manager.download_model(symbol)
         if path:
             model_paths[symbol] = path
+        else:
+            logger.warning(f"⚠️ Could not download {symbol} model")
     
     return model_paths
 
