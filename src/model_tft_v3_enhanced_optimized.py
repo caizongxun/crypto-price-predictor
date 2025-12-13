@@ -80,6 +80,9 @@ class MultiHeadAttention(nn.Module):
             output: Same shape as input query
             attention: attention weights
         """
+        # Store original dimensions for output shape
+        original_dim = query.dim()
+        
         # Handle both 2D and 3D inputs
         if query.dim() == 2:
             # (batch, hidden_size) -> add seq_len=1
@@ -92,20 +95,18 @@ class MultiHeadAttention(nn.Module):
         
         batch_size, seq_len, _ = query.shape
         
-        # Linear projections
+        # Linear projections (keep as 3D: batch, seq_len, hidden)
         Q = self.W_q(query)  # (batch, seq_len, hidden)
         K = self.W_k(key)
         V = self.W_v(value)
         
-        # Reshape for multi-head attention: (batch, seq_len, hidden) -> (batch, seq_len, num_heads, head_dim)
-        Q = Q.view(batch_size, seq_len, self.num_heads, self.head_dim)
-        K = K.view(batch_size, seq_len, self.num_heads, self.head_dim)
-        V = V.view(batch_size, seq_len, self.num_heads, self.head_dim)
+        # Reshape for multi-head attention
+        # (batch, seq_len, hidden) -> (batch, seq_len, num_heads, head_dim) -> (batch, num_heads, seq_len, head_dim)
+        Q = Q.reshape(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+        K = K.reshape(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+        V = V.reshape(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
         
-        # Transpose to (batch, num_heads, seq_len, head_dim)
-        Q = Q.transpose(1, 2)
-        K = K.transpose(1, 2)
-        V = V.transpose(1, 2)
+        # Now Q, K, V are (batch, num_heads, seq_len, head_dim)
         
         # Scaled dot-product attention
         scores = torch.matmul(Q, K.transpose(-2, -1)) / self.scale  # (batch, num_heads, seq_len, seq_len)
@@ -121,14 +122,16 @@ class MultiHeadAttention(nn.Module):
         # Apply attention to values
         context = torch.matmul(attention, V)  # (batch, num_heads, seq_len, head_dim)
         
-        # Transpose back to (batch, seq_len, num_heads, head_dim)
-        context = context.transpose(1, 2).contiguous()
-        
-        # Reshape to (batch, seq_len, hidden_size)
-        context = context.view(batch_size, seq_len, self.hidden_size)
+        # Transpose and reshape back to (batch, seq_len, hidden_size)
+        context = context.transpose(1, 2).contiguous()  # (batch, seq_len, num_heads, head_dim)
+        context = context.reshape(batch_size, seq_len, self.hidden_size)  # (batch, seq_len, hidden)
         
         # Final linear projection
-        output = self.fc_out(context)
+        output = self.fc_out(context)  # (batch, seq_len, hidden)
+        
+        # Handle original 2D input: squeeze if input was 2D
+        if original_dim == 2:
+            output = output.squeeze(1)  # (batch, hidden)
         
         return output, attention
 
