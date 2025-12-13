@@ -89,11 +89,17 @@ def visualize_tft(symbol='SOL', lookback=60):
             predictions_scaled = model(X_tensor).cpu().numpy().flatten()
         
         # CRITICAL FIX: Inverse transform predictions from scaled to original price
-        # The scaler was fit on the 'close' column, so we need to inverse it
+        # The scaler was fit on all 8 features, but we only need the first one (close)
         logger.info("Inverse-transforming predictions and targets...")
         
-        # Reshape for inverse_transform (must be 2D)
-        predictions_inverse = scaler.inverse_transform(predictions_scaled.reshape(-1, 1)).flatten()
+        # Create dummy array with same number of features
+        num_features = X.shape[2]
+        predictions_full = np.zeros((len(predictions_scaled), num_features))
+        predictions_full[:, 0] = predictions_scaled  # Put predictions in first column (close)
+        
+        # Inverse transform
+        predictions_inverse_full = scaler.inverse_transform(predictions_full)
+        predictions_inverse = predictions_inverse_full[:, 0]  # Extract close column
         
         # y_original is already in original scale (not normalized)
         # So we use it directly
