@@ -146,8 +146,19 @@ class MultiStepTrainer:
             y_batch = y_train[batch_indices]
             y_multistep_batch = y_train_multistep[batch_indices]
             
-            # Forward pass
+            # Forward pass - returns dict when return_full_forecast=True
             predictions = self.model(X_batch, return_full_forecast=True)
+            
+            # Extract predictions with safety checks
+            if isinstance(predictions, dict):
+                price_pred = predictions.get('price')
+                direction_logits = predictions.get('direction', None)
+                multistep_pred = predictions.get('multistep', None)
+            else:
+                # Fallback if model returns tensor instead of dict
+                price_pred = predictions
+                direction_logits = None
+                multistep_pred = None
             
             # Compute direction target
             y_prev = X_batch[:, -1:, 0].unsqueeze(-1)  # Last price in sequence
@@ -155,11 +166,11 @@ class MultiStepTrainer:
             
             # Loss computation
             loss = self.loss_fn(
-                price_pred=predictions['price'],
+                price_pred=price_pred,
                 price_target=y_batch,
-                direction_logits=predictions.get('direction'),
+                direction_logits=direction_logits,
                 direction_target=direction_target,
-                multistep_pred=predictions.get('multistep'),
+                multistep_pred=multistep_pred,
                 multistep_target=y_multistep_batch
             )
             
@@ -172,12 +183,13 @@ class MultiStepTrainer:
             total_loss += loss.item()
             num_batches += 1
         
-        return total_loss / num_batches
+        return total_loss / max(1, num_batches)
     
     def validate(self, X_val, y_val, y_val_multistep):
         """Validation step"""
         self.model.eval()
         total_loss = 0
+        num_batches = 0
         
         with torch.no_grad():
             for i in range(0, len(X_val), 16):
@@ -186,21 +198,33 @@ class MultiStepTrainer:
                 y_multistep_batch = y_val_multistep[i:i+16]
                 
                 predictions = self.model(X_batch, return_full_forecast=True)
+                
+                # Extract predictions with safety checks
+                if isinstance(predictions, dict):
+                    price_pred = predictions.get('price')
+                    direction_logits = predictions.get('direction', None)
+                    multistep_pred = predictions.get('multistep', None)
+                else:
+                    price_pred = predictions
+                    direction_logits = None
+                    multistep_pred = None
+                
                 y_prev = X_batch[:, -1:, 0].unsqueeze(-1)
                 direction_target = self._compute_direction_target(y_prev, y_batch)
                 
                 loss = self.loss_fn(
-                    price_pred=predictions['price'],
+                    price_pred=price_pred,
                     price_target=y_batch,
-                    direction_logits=predictions.get('direction'),
+                    direction_logits=direction_logits,
                     direction_target=direction_target,
-                    multistep_pred=predictions.get('multistep'),
+                    multistep_pred=multistep_pred,
                     multistep_target=y_multistep_batch
                 )
                 
                 total_loss += loss.item()
+                num_batches += 1
         
-        return total_loss / max(1, (len(X_val) + 15) // 16)
+        return total_loss / max(1, num_batches)
     
     def compute_metrics(self, X_val, y_val_original):
         """Compute evaluation metrics"""
@@ -209,6 +233,12 @@ class MultiStepTrainer:
         with torch.no_grad():
             preds = self.model(X_val).squeeze().cpu().numpy()
             y_true = y_val_original.cpu().numpy().squeeze()
+        
+        # Handle scalar predictions
+        if np.isscalar(preds):
+            preds = np.array([preds])
+        if np.isscalar(y_true):
+            y_true = np.array([y_true])
         
         # Inverse transform
         num_features = X_val.shape[2]
