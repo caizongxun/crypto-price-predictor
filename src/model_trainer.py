@@ -21,15 +21,15 @@ class LSTMModel(nn.Module):
     """LSTM neural network for time series prediction."""
     
     def __init__(self, input_size: int, hidden_size: int = 128, 
-                 num_layers: int = 2, dropout: float = 0.2, 
-                 output_size: int = 5): # Default output_size updated to 5
+                 num_layers: int = 2, dropout: float = 0.5,  # 增加dropout強度
+                 output_size: int = 5):
         """Initialize LSTM model.
         
         Args:
             input_size: Number of input features
             hidden_size: Number of hidden units
             num_layers: Number of LSTM layers
-            dropout: Dropout rate
+            dropout: Dropout rate (increased to 0.5 for better regularization)
             output_size: Number of output prediction steps
         """
         super(LSTMModel, self).__init__()
@@ -49,13 +49,14 @@ class LSTMModel(nn.Module):
         self.attention = nn.MultiheadAttention(
             embed_dim=hidden_size * 2,
             num_heads=8,
-            batch_first=True
+            batch_first=True,
+            dropout=dropout  # 也在attention序列中加入dropout
         )
         
         self.fc1 = nn.Linear(hidden_size * 2, 64)
         self.relu = nn.ReLU()
-        self.dropout = nn.Dropout(dropout)
-        self.fc2 = nn.Linear(64, output_size) # Predicts 'output_size' steps ahead
+        self.dropout = nn.Dropout(dropout)  # 強化dropout
+        self.fc2 = nn.Linear(64, output_size)
     
     def forward(self, x):
         """Forward pass.
@@ -89,7 +90,8 @@ class TransformerModel(nn.Module):
     
     def __init__(self, input_size: int, d_model: int = 512,
                  num_heads: int = 8, num_layers: int = 4,
-                 dropout: float = 0.1, output_size: int = 5): # Default output_size updated to 5
+                 dropout: float = 0.3,  # 增加dropout
+                 output_size: int = 5):
         """Initialize Transformer model.
         
         Args:
@@ -156,7 +158,7 @@ class ModelTrainer:
         self.model = None
         self.optimizer = None
         self.criterion = nn.MSELoss()
-        self.output_size = 5 # Default prediction horizon
+        self.output_size = 5
         
         logger.info(f"Using device: {self.device}")
         logger.info(f"Model type: {model_type}")
@@ -176,9 +178,6 @@ class ModelTrainer:
         try:
             # Ensure y is 2D (batch_size, output_size)
             if len(y.shape) == 1:
-                 # If y is 1D, we need to restructure it for multi-step prediction in previous steps.
-                 # However, usually prepare_sequences handles this.
-                 # Assuming y passed here is already correctly shaped (samples, output_size)
                  pass
 
             # Split data
@@ -213,7 +212,7 @@ class ModelTrainer:
                     input_size=input_size,
                     hidden_size=self.config.get('hidden_size', 128),
                     num_layers=self.config.get('num_layers', 2),
-                    dropout=self.config.get('dropout', 0.2),
+                    dropout=self.config.get('dropout', 0.5),  # 使用更強的dropout
                     output_size=self.output_size
                 )
             elif self.model_type == 'transformer':
@@ -222,18 +221,33 @@ class ModelTrainer:
                     d_model=self.config.get('d_model', 512),
                     num_heads=self.config.get('num_heads', 8),
                     num_layers=self.config.get('num_layers', 4),
+                    dropout=self.config.get('dropout', 0.3),  # 使用更強的dropout
                     output_size=self.output_size
                 )
             else:
                 raise ValueError(f"Unknown model type: {self.model_type}")
             
             self.model.to(self.device)
+            
+            # ⬇️ L2正則化 (新增 weight_decay)
             self.optimizer = optim.Adam(
                 self.model.parameters(),
-                lr=self.config.get('learning_rate', 0.001)
+                lr=self.config.get('learning_rate', 0.001),
+                weight_decay=self.config.get('weight_decay', 0.01)  # L2 regularization
+            )
+            
+            # Learning rate scheduler
+            self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+                self.optimizer,
+                mode='min',
+                factor=0.5,
+                patience=5,
+                verbose=True
             )
             
             logger.info(f"{self.model_type.upper()} model created with output size {self.output_size}")
+            logger.info(f"  Dropout: {self.config.get('dropout', 0.5)}")
+            logger.info(f"  Weight Decay (L2): {self.config.get('weight_decay', 0.01)}")
             return self.model
         except Exception as e:
             logger.error(f"Failed to create model: {e}")
@@ -242,7 +256,7 @@ class ModelTrainer:
     def train(self, X_train: torch.Tensor, y_train: torch.Tensor,
              X_val: torch.Tensor, y_val: torch.Tensor,
              epochs: int = 100, batch_size: int = 32,
-             early_stopping_patience: int = 10) -> Dict:
+             early_stopping_patience: int = 15) -> Dict:  # 增加patience
         """Train the model.
         
         Args:
@@ -272,10 +286,12 @@ class ModelTrainer:
                 for batch_X, batch_y in train_loader:
                     self.optimizer.zero_grad()
                     predictions = self.model(batch_X)
-                    # batch_y should be (batch_size, output_size)
                     loss = self.criterion(predictions, batch_y)
                     loss.backward()
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                    
+                    # ⬇️ Gradient clipping - prevent exploding gradients
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                    
                     self.optimizer.step()
                     train_loss += loss.item()
                 
@@ -289,6 +305,9 @@ class ModelTrainer:
                 
                 history['train_loss'].append(train_loss)
                 history['val_loss'].append(val_loss)
+                
+                # Learning rate scheduling
+                self.scheduler.step(val_loss)
                 
                 if (epoch + 1) % 10 == 0:
                     logger.info(f"Epoch {epoch+1}/{epochs} - "
