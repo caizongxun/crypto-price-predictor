@@ -3,6 +3,7 @@ import time
 import logging
 import pandas as pd
 import numpy as np
+import torch
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import threading
@@ -48,6 +49,7 @@ class RealtimeTradingBot:
         self.timeframe = '1h'
         self.check_interval = 900  # 15 minutes
         self.use_huggingface = use_huggingface
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
         self.data_fetcher = DataFetcher()
         self.signal_generators = {}
@@ -75,6 +77,7 @@ class RealtimeTradingBot:
     def _initialize_models(self):
         """為每個交易對加載訓練好的模型 (支持 HuggingFace 和本地模型)"""
         logger.info(f"🔧 Model Source: {'HuggingFace Hub' if self.use_huggingface else 'Local Storage'}")
+        logger.info(f"🖥️  Device: {self.device}")
         
         for symbol in self.symbols:
             try:
@@ -83,16 +86,15 @@ class RealtimeTradingBot:
                 # 情況 1：使用 HuggingFace 模型
                 if self.use_huggingface:
                     logger.info(f"📥 Downloading {symbol_short} model from HuggingFace...")
-                    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
                     model = self.hf_manager.load_model_from_hf(
                         symbol=symbol_short,
-                        device=device,
+                        device=self.device,
                         model_type='lstm'
                     )
                     
                     if model is None:
                         logger.warning(f"⚠️ Failed to load {symbol_short} from HF, falling back to local")
-                        self.use_huggingface = False  # Fall back to local mode
+                        # 嘗試從本地加載
                         model = self._load_local_model(symbol)
                         if model is None:
                             logger.error(f"❌ Cannot load {symbol_short} from any source!")
@@ -123,15 +125,15 @@ class RealtimeTradingBot:
                     def __call__(self, x):
                         return self.lstm(x)
 
-                wrapped_model = EnsembleModelWrapper(model, device)
+                wrapped_model = EnsembleModelWrapper(model, self.device)
                 logger.info(f"✅ Loaded wrapped ensemble model for {symbol_short}")
                 
                 self.signal_generators[symbol] = SignalGenerator(
                     model=wrapped_model,
-                    device=device
+                    device=self.device
                 )
                 
-                logger.info(f"🔧 SignalGenerator for {symbol_short}: model=✅ Loaded, device={device}")
+                logger.info(f"🔧 SignalGenerator for {symbol_short}: model=✅ Loaded, device={self.device}")
                 
             except Exception as e:
                 logger.error(f"Error initializing model for {symbol}: {e}", exc_info=True)
@@ -141,7 +143,6 @@ class RealtimeTradingBot:
     def _load_local_model(self, symbol: str):
         """Load model from local storage."""
         try:
-            import torch
             symbol_short = symbol.replace('USDT', '')
             model_path = f"models/saved_models/{symbol_short}_lstm_model.pth"
             
@@ -149,7 +150,6 @@ class RealtimeTradingBot:
                 logger.warning(f"⚠️ No local model found at {model_path}")
                 return None
             
-            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
             model_trainer = ModelTrainer(model_type='lstm', config={
                 'hidden_size': 256,
                 'num_layers': 3,
@@ -158,6 +158,7 @@ class RealtimeTradingBot:
             
             logger.info(f"📂 Loading {symbol_short} from local storage...")
             model_trainer.load_model(model_path, input_size=17)
+            model_trainer.model.to(self.device)
             
             # Verify output size
             if model_trainer.model.fc2.out_features != 5:
