@@ -47,10 +47,12 @@ logs/
 data/historical/*
 !data/historical/.gitkeep
 
-# Models
+# Models - IGNORE ALL MODELS
 models/saved_models/*
 !models/saved_models/.gitkeep
-!models/saved_models/*.pth
+# Removed exception for .pth files so they are NOT tracked by git
+# !models/saved_models/*.pth
+
 # Database
 *.db
 *.sqlite
