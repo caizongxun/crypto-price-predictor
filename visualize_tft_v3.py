@@ -57,7 +57,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from src.utils import setup_logging
 from src.data_fetcher_tft_v3 import TFTDataFetcher
-from src.model_tft_v3_optimized import TemporalFusionTransformerV3Optimized
+from src.model_tft_v3_enhanced import TemporalFusionTransformerV3Enhanced
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -157,11 +157,7 @@ def predict_multistep(model, X_latest, steps=5, device='cpu'):
     with torch.no_grad():
         for _ in range(steps):
             X_tensor = torch.tensor(current_X, dtype=torch.float32).to(device)
-            if hasattr(model, 'use_direction_head') and model.use_direction_head:
-                pred, _ = model(X_tensor, return_direction_logits=True)
-            else:
-                pred = model(X_tensor)
-            pred = pred.squeeze().cpu().numpy()
+            pred = model(X_tensor).squeeze().cpu().numpy()
             if pred.ndim == 0:
                 pred = float(pred)
             else:
@@ -198,27 +194,33 @@ def visualize_tft_v3(symbol='SOL', lookback=60, predict_steps=5):
         if X is None:
             return
         
-        # Load model
+        # Load model - try enhanced first, then fallback to others
         logger.info(f"[4/8] Loading model...")
-        model_path = f'models/saved_models/{symbol}_tft_directional_model.pth'
+        model_paths = [
+            f'models/saved_models/{symbol}_tft_enhanced_model.pth',
+            f'models/saved_models/{symbol}_tft_directional_model.pth',
+            f'models/saved_models/{symbol}_tft_model.pth'
+        ]
         
-        if not os.path.exists(model_path):
-            logger.warning(f"Directional model not found, trying standard...")
-            model_path = f'models/saved_models/{symbol}_tft_model.pth'
+        model_path = None
+        for path in model_paths:
+            if os.path.exists(path):
+                model_path = path
+                logger.info(f"Found model: {path}")
+                break
         
-        if not os.path.exists(model_path):
-            logger.error(f"Model not found: {model_path}")
-            logger.info(f"Searched for: {model_path}")
+        if model_path is None:
+            logger.error(f"Model not found. Searched for: {model_paths}")
             return
         
         input_size = X.shape[2]
-        model = TemporalFusionTransformerV3Optimized(
+        model = TemporalFusionTransformerV3Enhanced(
             input_size=input_size,
-            hidden_size=256,
+            hidden_size=512,
             num_heads=8,
-            num_layers=2,
+            num_layers=4,
             dropout=0.2,
-            use_direction_head=True
+            output_size=1
         ).to(device)
         
         state_dict = torch.load(model_path, map_location=device)
@@ -231,11 +233,7 @@ def visualize_tft_v3(symbol='SOL', lookback=60, predict_steps=5):
         X_tensor = torch.tensor(X, dtype=torch.float32).to(device)
         
         with torch.no_grad():
-            if hasattr(model, 'use_direction_head') and model.use_direction_head:
-                preds_scaled, _ = model(X_tensor, return_direction_logits=True)
-            else:
-                preds_scaled = model(X_tensor)
-            preds_scaled = preds_scaled.squeeze().cpu().numpy()
+            preds_scaled = model(X_tensor).squeeze().cpu().numpy()
         
         # Inverse transform
         num_features = X.shape[2]
@@ -433,16 +431,14 @@ def visualize_tft_v3(symbol='SOL', lookback=60, predict_steps=5):
         ax6.legend()
         ax6.grid(True, alpha=0.3, axis='y')
         
-        # Plot 7: Multi-step forecast (FIXED)
+        # Plot 7: Multi-step forecast
         ax7 = plt.subplot(3, 3, 7)
         hist_len = 20
         hist_data = y_true[-hist_len:]
         hist_x = np.arange(hist_len)
         
-        # Plot historical data
         ax7.plot(hist_x, hist_data, 'o-', color='blue', label='Historical', linewidth=2)
         
-        # Plot forecast data - append current price to forecast
         forecast_data = np.concatenate([[y_true[-1]], future_inverse])
         forecast_x = np.arange(hist_len - 1, hist_len - 1 + len(forecast_data))
         ax7.plot(forecast_x, forecast_data, 's--', color='green', label='Forecast', linewidth=2, markersize=8)
