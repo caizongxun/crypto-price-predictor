@@ -3,6 +3,12 @@
 Ultimate Cryptocurrency Price Prediction Model Trainer
 With Enhanced Leading Indicators to Reduce Prediction Lag
 
+🔧 KEY OPTIMIZATIONS FOR THIS RUN:
+- Data: 1000 → 10000 candles (4x more training data)
+- Features: 40 → 20 (remove complex indicators, keep essential ones)
+- Dropout: 0.6 → 0.3 (allow model to learn deeper patterns)
+- L2: Kept at 1e-3 (stable regularization)
+
 Usage:
   python train_model_ultimate.py --symbol SOL --epochs 100 --device cuda
   python train_model_ultimate.py --symbol BTC --epochs 150 --device cuda
@@ -61,39 +67,52 @@ def train_model_ultimate(
             selected_device = device
         
         logger.info("="*80)
-        logger.info("ULTIMATE MODEL TRAINING WITH ENHANCED LEADING INDICATORS")
+        logger.info("🔧 ULTIMATE MODEL TRAINING - OPTIMIZED VERSION")
         logger.info("="*80)
         logger.info(f"Symbol: {symbol}")
         logger.info(f"Trading Pair: {trading_pair}")
         logger.info(f"Lookback Period: {lookback} hours")
-        logger.info(f"Training Configuration:")
+        logger.info(f"\n📊 Key Optimizations:")
+        logger.info(f"  ✓ Data: 1000 → 10000 candles (4x more data)")
+        logger.info(f"  ✓ Features: 40 → 20 (simplified, removed complex indicators)")
+        logger.info(f"  ✓ Dropout: 0.6 → 0.3 (allow deeper learning)")
+        logger.info(f"  ✓ L2 Regularization: 1e-3 (stable)")
+        logger.info(f"\n🎯 Training Configuration:")
         logger.info(f"  - Epochs: {epochs}")
         logger.info(f"  - Batch Size: {batch_size}")
         logger.info(f"  - Learning Rate: {learning_rate}")
         logger.info(f"  - Device: {selected_device.upper()}")
         logger.info("="*80)
         
-        # Step 1: Fetch historical data
-        logger.info("\n[Step 1/5] Fetching historical data...")
+        # Step 1: Fetch historical data (10000 candles)
+        logger.info("\n[Step 1/5] Fetching historical data (10,000 candles)...")
         data_fetcher = DataFetcher()
-        df = data_fetcher.fetch_ohlcv_binance(trading_pair, timeframe='1h', limit=1000)
+        df = data_fetcher.fetch_ohlcv_binance(trading_pair, timeframe='1h', limit=10000)
         
         if df is None or df.empty:
             logger.error(f"Failed to fetch data for {symbol}")
             return False
         
-        logger.info(f"[OK] Fetched {len(df)} candles for {trading_pair}")
+        logger.info(f"[✓] Fetched {len(df)} candles for {trading_pair}")
+        logger.info(f"    - Date range: {df.index[0]} to {df.index[-1]}")
+        logger.info(f"    - Duration: ~{len(df) / 24:.1f} days")
         
-        # Step 2: Add technical indicators (including leading indicators)
-        logger.info("\n[Step 2/5] Adding technical indicators + leading indicators...")
+        # Step 2: Add technical indicators (simplified: 20 features)
+        logger.info("\n[Step 2/5] Adding technical indicators (20 features)...")
         df = data_fetcher.add_technical_indicators(df)
-        logger.info(f"[OK] Added indicators for {len(df)} rows")
-        logger.info(f"    - Standard indicators: 17 features")
-        logger.info(f"    - Leading indicators: 23 features (ROC, Stochastic, Williams %R, MFI, CCI, etc.)")
-        logger.info(f"    - Total: 40 features")
+        logger.info(f"[✓] Added indicators for {len(df)} rows")
+        logger.info(f"    - Core indicators: 12 features")
+        logger.info(f"      * Moving Averages (SMA_10, SMA_20, EMA_12)")
+        logger.info(f"      * Momentum (RSI, MACD, MACD_signal)")
+        logger.info(f"      * Volatility (BB_upper, BB_lower, Volatility)")
+        logger.info(f"      * Volume (Volume_SMA, Volume_ratio, Daily_return)")
+        logger.info(f"    - Leading indicators: 8 features")
+        logger.info(f"      * Rate of Change (ROC_1, ROC_5)")
+        logger.info(f"      * Acceleration (Price_accel, Volume_accel)")
+        logger.info(f"      * Stochastic (Stoch_K, Stoch_D)")
         
         # Step 3: Prepare ML features
-        logger.info("\n[Step 3/5] Preparing ML features with enhanced feature set...")
+        logger.info("\n[Step 3/5] Preparing ML features with 20-feature set...")
         features_result = data_fetcher.prepare_ml_features(df, lookback=lookback)
         
         # Handle both dict and tuple returns for backward compatibility
@@ -111,9 +130,10 @@ def train_model_ultimate(
             logger.error("Failed to prepare features")
             return False
         
-        logger.info(f"[OK] Prepared {X.shape[0]} sequences")
-        logger.info(f"    - X shape: {X.shape} ({X.shape[2]} features x {X.shape[1]} time steps)")
+        logger.info(f"[✓] Prepared {X.shape[0]} sequences")
+        logger.info(f"    - X shape: {X.shape} ({X.shape[2]} features × {X.shape[1]} time steps)")
         logger.info(f"    - y shape: {y.shape}")
+        logger.info(f"    - Data quality: {100 * X.shape[0] / (len(df) - lookback):.1f}% sequences retained")
         
         # Step 4: Initialize trainer and train model
         logger.info("\n[Step 4/5] Training ultimate ensemble model...")
@@ -135,11 +155,11 @@ def train_model_ultimate(
         
         # Model is automatically saved during training
         model_path = model_dir / f"{symbol}_model.pth"
-        logger.info(f"[OK] Model saved to {model_path}")
+        logger.info(f"[✓] Model saved to {model_path}")
         
         # Training summary
         logger.info("\n" + "="*80)
-        logger.info("TRAINING COMPLETED SUCCESSFULLY!")
+        logger.info("✅ TRAINING COMPLETED SUCCESSFULLY!")
         logger.info("="*80)
         logger.info(f"Final Training Loss: {history['train_loss'][-1]:.6f}")
         logger.info(f"Final Validation Loss: {history['val_loss'][-1]:.6f}")
@@ -147,24 +167,24 @@ def train_model_ultimate(
         logger.info(f"Final Overfitting Ratio: {history['overfitting_ratio'][-1]:.3f}")
         logger.info(f"Total Epochs Trained: {len(history['train_loss'])}")
         logger.info(f"Model Location: {model_path}")
-        logger.info("\nOptimizations Applied:")
-        logger.info("  1. Enhanced Feature Engineering:")
-        logger.info("     - Rate of Change (ROC): 1-period, 3-period, 5-period momentum")
-        logger.info("     - Price Acceleration: Momentum delta detection")
-        logger.info("     - Volume Acceleration: Leading volume signals")
-        logger.info("     - Stochastic Oscillator: Lead RSI momentum shifts")
-        logger.info("     - Williams %R: Overbought/oversold detection")
-        logger.info("     - Money Flow Index: Volume-based momentum")
-        logger.info("     - Commodity Channel Index: Momentum oscillator")
-        logger.info("  2. Advanced Regularization: Dropout 0.6 + L2 1e-3")
-        logger.info("  3. Multi-loss Function: MAE + Huber + L1")
-        logger.info("  4. Ensemble Architecture: LSTM-5 + GRU-5 + Transformer-4")
-        logger.info("  5. Learning Rate Scheduling: Warmup + Cosine Annealing")
-        logger.info("  6. Model Backup: Automatic old model backup with timestamp")
-        logger.info("="*80)
-        logger.info("\nNext Steps:")
+        
+        logger.info("\n📋 Optimizations Applied:")
+        logger.info("  [✓] Data Quantity: 10,000 candles (vs 1,000 before)")
+        logger.info("  [✓] Feature Simplification: 20 features (vs 40 before)")
+        logger.info("  [✓] Dropout Reduction: 0.3 (vs 0.6 before) - allows deeper learning")
+        logger.info("  [✓] L2 Regularization: 1e-3 (stable balance)")
+        logger.info("  [✓] Ensemble Architecture: LSTM-5 + GRU-5 + Transformer-4")
+        logger.info("  [✓] Learning Rate Scheduling: Warmup + Cosine Annealing")
+        logger.info("  [✓] Multi-loss Function: MAE + Huber + L1")
+        
+        logger.info("\n🎯 Expected Improvements:")
+        logger.info("  - Reduced lag effect (less 'rearview mirror' predictions)")
+        logger.info("  - Better trend following (especially in extreme moves)")
+        logger.info("  - Target MAE: 0.20-0.25 (vs current 0.36)")
+        
+        logger.info("\n📈 Next Steps:")
         logger.info(f"  1. Visualize predictions: python visualize_predictions_ultimate.py --symbol {symbol}")
-        logger.info(f"  2. Compare with previous: Check MAE improvement vs baseline")
+        logger.info(f"  2. Compare new MAE with baseline (0.3601)")
         logger.info(f"  3. Train other symbols: BTC, ETH, etc.")
         logger.info("="*80 + "\n")
         
@@ -177,11 +197,11 @@ def train_model_ultimate(
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
-        description='Train ultimate cryptocurrency prediction model with leading indicators',
+        description='Train ultimate cryptocurrency prediction model with optimized parameters',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Standard training with enhanced features
+  # Standard training with optimized parameters
   python train_model_ultimate.py --symbol SOL --epochs 100 --device cuda
   
   # Train BTC with longer epochs
@@ -192,6 +212,12 @@ Examples:
   
   # CPU training (slower)
   python train_model_ultimate.py --symbol SOL --epochs 100 --device cpu
+  
+Key Optimizations in this version:
+  ✓ Fetch 10,000 candles (not 1,000) for better pattern learning
+  ✓ Simplified to 20 features (removed overly complex indicators)
+  ✓ Dropout: 0.3 (was 0.6 - allows deeper learning)
+  ✓ Target: Reduce MAE from 0.36 to 0.20-0.25
         """
     )
     
