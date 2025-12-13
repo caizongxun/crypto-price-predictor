@@ -7,7 +7,7 @@ Key Improvements:
 2. Larger hidden size (512 vs 256)
 3. Residual connections
 4. Better loss function (ScaledMSE)
-5. 更強大的架構
+5. Stronger architecture
 
 Expected Performance:
 - MAE: < 3 USD
@@ -144,7 +144,7 @@ class EnhancedTrainer:
         logger.info(f"\n[3/5] Setting up training...")
         model = model.to(device)
         optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=0.0001)
-        scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10, verbose=True)
+        scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10)
         
         # Use ScaledMSE loss for better gradient signal
         loss_fn = ScaledMSELoss()
@@ -209,7 +209,8 @@ class EnhancedTrainer:
         logger.info(f"  Best Val Loss: {min(history['val_loss']):.6f}")
         logger.info(f"  Final Train Loss: {history['train_loss'][-1]:.6f}")
         logger.info(f"  Final Val Loss: {history['val_loss'][-1]:.6f}")
-        logger.info(f"  Improvement: {((history['train_loss'][0] - history['train_loss'][-1]) / history['train_loss'][0] * 100):.1f}%")
+        if history['train_loss'][0] > 0:
+            logger.info(f"  Improvement: {((history['train_loss'][0] - history['train_loss'][-1]) / history['train_loss'][0] * 100):.1f}%")
         logger.info("="*80 + "\n")
         
         return model, history
@@ -255,9 +256,9 @@ def main():
         # Use enhanced model
         model = TemporalFusionTransformerV3Enhanced(
             input_size=X.shape[2],
-            hidden_size=512,  # Increased from 256
+            hidden_size=512,
             num_heads=8,
-            num_layers=4,     # Increased from 2
+            num_layers=4,
             dropout=0.2,
             output_size=1
         )
