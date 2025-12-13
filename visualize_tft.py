@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 Visualize Temporal Fusion Transformer Predictions
+FIX: Correctly inverse-transform scaled predictions and targets
 """
 
 import os
@@ -38,7 +39,7 @@ def load_tft_model(model_path, input_size, device):
 
 
 def visualize_tft(symbol='SOL', lookback=60):
-    """Visualize TFT model predictions"""
+    """Visualize TFT model predictions with correct scaling"""
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logger.info(f"Using device: {device}")
     
@@ -64,7 +65,7 @@ def visualize_tft(symbol='SOL', lookback=60):
         
         # Prepare features
         logger.info("Preparing ML features...")
-        X, y, scaler = fetcher.prepare_ml_features(df, lookback=lookback)
+        X, y_original, scaler = fetcher.prepare_ml_features(df, lookback=lookback)
         
         logger.info(f"Created {len(X)} sequences for prediction")
         
@@ -80,38 +81,52 @@ def visualize_tft(symbol='SOL', lookback=60):
         input_size = X.shape[2]
         model = load_tft_model(model_path, input_size, device)
         
-        # Make predictions
+        # Make predictions (scaled)
         logger.info("Making predictions...")
         X_tensor = torch.tensor(X, dtype=torch.float32).to(device)
         
         with torch.no_grad():
-            predictions = model(X_tensor).cpu().numpy().flatten()
+            predictions_scaled = model(X_tensor).cpu().numpy().flatten()
         
-        # Calculate metrics
+        # CRITICAL FIX: Inverse transform predictions from scaled to original price
+        # The scaler was fit on the 'close' column, so we need to inverse it
+        logger.info("Inverse-transforming predictions and targets...")
+        
+        # Reshape for inverse_transform (must be 2D)
+        predictions_inverse = scaler.inverse_transform(predictions_scaled.reshape(-1, 1)).flatten()
+        
+        # y_original is already in original scale (not normalized)
+        # So we use it directly
+        y = y_original
+        predictions = predictions_inverse
+        
+        # Calculate metrics with ORIGINAL SCALE values
         mae = np.mean(np.abs(predictions - y))
         rmse = np.sqrt(np.mean((predictions - y) ** 2))
         mape = np.mean(np.abs((y - predictions) / (np.abs(y) + 1e-8))) * 100
         
         logger.info("\n" + "="*60)
-        logger.info(f"Model Performance Metrics for {symbol}:")
-        logger.info(f"  MAE:  {mae:.6f}")
-        logger.info(f"  RMSE: {rmse:.6f}")
+        logger.info(f"Model Performance Metrics for {symbol} (Original Scale):")
+        logger.info(f"  MAE:  {mae:.6f} USD")
+        logger.info(f"  RMSE: {rmse:.6f} USD")
         logger.info(f"  MAPE: {mape:.4f}%")
         logger.info(f"  Samples: {len(predictions)}")
         logger.info(f"  Features: {input_size}")
+        logger.info(f"  Mean Actual Price: {y.mean():.2f} USD")
+        logger.info(f"  Mean Predicted Price: {predictions.mean():.2f} USD")
         logger.info("="*60)
         
         # Visualization
         fig = plt.figure(figsize=(16, 12))
         
-        # Plot 1: Last 100 hours
+        # Plot 1: Last 100 hours (ORIGINAL PRICES)
         ax1 = plt.subplot(2, 2, 1)
         last_n = min(100, len(predictions))
-        ax1.plot(range(last_n), y[-last_n:], label='Actual Price (Normalized)', color='blue', alpha=0.8, linewidth=2)
-        ax1.plot(range(last_n), predictions[-last_n:], label='Predicted Price (TFT)', color='green', alpha=0.7, linestyle='--', linewidth=2)
-        ax1.set_title(f'{symbol} Price Prediction - Temporal Fusion Transformer (Last {last_n} Hours)\nMAE: {mae:.4f}, MAPE: {mape:.2f}%', fontsize=12, fontweight='bold')
+        ax1.plot(range(last_n), y[-last_n:], label='Actual Price (USD)', color='blue', alpha=0.8, linewidth=2)
+        ax1.plot(range(last_n), predictions[-last_n:], label='Predicted Price (TFT, USD)', color='green', alpha=0.7, linestyle='--', linewidth=2)
+        ax1.set_title(f'{symbol} Price Prediction - TFT (Last {last_n} Hours)\nMAE: {mae:.4f} USD, MAPE: {mape:.2f}%', fontsize=12, fontweight='bold')
         ax1.set_xlabel('Time Steps')
-        ax1.set_ylabel('Normalized Price')
+        ax1.set_ylabel('Price (USD)')
         ax1.legend(loc='best')
         ax1.grid(True, alpha=0.3)
         
@@ -129,7 +144,7 @@ def visualize_tft(symbol='SOL', lookback=60):
         
         ax2.axvline(x=0, color='red', linestyle='--', alpha=0.7, label='Zero Error')
         ax2.set_title('Prediction Error Distribution (TFT)', fontsize=12, fontweight='bold')
-        ax2.set_xlabel('Prediction Error (Normalized)')
+        ax2.set_xlabel('Prediction Error (USD)')
         ax2.set_ylabel('Frequency (Density)')
         ax2.legend()
         ax2.grid(True, alpha=0.3)
@@ -140,9 +155,9 @@ def visualize_tft(symbol='SOL', lookback=60):
         min_val = min(y.min(), predictions.min())
         max_val = max(y.max(), predictions.max())
         ax3.plot([min_val, max_val], [min_val, max_val], 'r--', linewidth=2, label='Perfect Prediction')
-        ax3.set_title('Actual vs Predicted Values (TFT)', fontsize=12, fontweight='bold')
-        ax3.set_xlabel('Actual (Normalized)')
-        ax3.set_ylabel('Predicted (Normalized)')
+        ax3.set_title('Actual vs Predicted Values (TFT, Original Scale)', fontsize=12, fontweight='bold')
+        ax3.set_xlabel('Actual (USD)')
+        ax3.set_ylabel('Predicted (USD)')
         ax3.legend()
         ax3.grid(True, alpha=0.3)
         
@@ -150,11 +165,11 @@ def visualize_tft(symbol='SOL', lookback=60):
         ax4 = plt.subplot(2, 2, 4)
         ax4.plot(errors, alpha=0.7, color='orange', linewidth=1)
         ax4.axhline(y=0, color='red', linestyle='--', alpha=0.5)
-        ax4.axhline(y=mae, color='orange', linestyle='--', alpha=0.5, label=f'Mean Error: {mae:.4f}')
+        ax4.axhline(y=mae, color='orange', linestyle='--', alpha=0.5, label=f'Mean Error: {mae:.4f} USD')
         ax4.axhline(y=-mae, color='orange', linestyle='--', alpha=0.5)
         ax4.set_title('Prediction Error Over Time (TFT)', fontsize=12, fontweight='bold')
         ax4.set_xlabel('Sample Index')
-        ax4.set_ylabel('Error (Normalized)')
+        ax4.set_ylabel('Error (USD)')
         ax4.legend()
         ax4.grid(True, alpha=0.3)
         
