@@ -11,7 +11,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from src.model_trainer_ultimate import UltimateLSTMModel, UltimateGRUModel, UltimateTransformerModel, UltimateEnsembleModel
-from src.data_fetcher import fetch_crypto_data, add_technical_indicators, prepare_features
+from src.data_fetcher import fetch_crypto_data, add_technical_indicators
 from sklearn.preprocessing import StandardScaler
 import logging
 from src.utils import setup_logging
@@ -48,7 +48,7 @@ def visualize_ultimate(symbol='SOL', lookback=60, future_steps=1):
     
     # 1. Fetch Data
     logger.info(f"Fetching data for {symbol}...")
-    df = fetch_crypto_data(symbol, days=200) # Fetch more data for visualization
+    df = fetch_crypto_data(symbol, days=200) 
     if df is None:
         return
         
@@ -83,12 +83,20 @@ def visualize_ultimate(symbol='SOL', lookback=60, future_steps=1):
     X = torch.tensor(np.array(X), dtype=torch.float32).to(device)
     y = np.array(y)
     
-    # 4. Load Model
-    model_path = f'models/saved_models/{symbol}_ultimate_model.pth'
+    # 4. Load Model (Using standard name)
+    model_path = f'models/saved_models/{symbol}_model.pth'
+    
+    # Fallback to ultimate name if standard not found
     if not os.path.exists(model_path):
-        logger.error(f"Model file not found: {model_path}")
-        return
+        fallback_path = f'models/saved_models/{symbol}_ultimate_model.pth'
+        if os.path.exists(fallback_path):
+            logger.warning(f"Standard model not found, using fallback: {fallback_path}")
+            model_path = fallback_path
+        else:
+            logger.error(f"Model file not found: {model_path}")
+            return
         
+    logger.info(f"Loading model from: {model_path}")
     input_size = X.shape[2]
     model = load_ultimate_model(model_path, input_size, device)
     
@@ -133,10 +141,17 @@ def visualize_ultimate(symbol='SOL', lookback=60, future_steps=1):
     # Save plot
     output_dir = 'analysis_plots'
     os.makedirs(output_dir, exist_ok=True)
-    save_path = os.path.join(output_dir, f'{symbol}_ultimate_analysis.png')
+    save_path = os.path.join(output_dir, f'{symbol}_prediction_analysis.png')
     plt.savefig(save_path)
     logger.info(f"Plot saved to {save_path}")
-    plt.show()
+    
+    # Don't show plot in headless environments
+    # plt.show() 
 
 if __name__ == "__main__":
-    visualize_ultimate('SOL')
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--symbol', type=str, default='SOL')
+    args = parser.parse_args()
+    
+    visualize_ultimate(args.symbol)
