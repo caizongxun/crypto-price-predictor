@@ -263,10 +263,7 @@ class TemporalFusionTransformerV3EnhancedOptimized(nn.Module):
         self.use_direction_head = use_direction_head
         self.use_multistep_head = use_multistep_head
         
-        # Input normalization
-        self.input_norm = nn.LayerNorm(input_size)
-        
-        # Input projection
+        # Input projection (normalize in projection)
         self.input_projection = nn.Sequential(
             nn.Linear(input_size, hidden_size),
             nn.LayerNorm(hidden_size),
@@ -356,10 +353,7 @@ class TemporalFusionTransformerV3EnhancedOptimized(nn.Module):
         batch_size, seq_len, _ = x.shape
         device = x.device
         
-        # Normalize input
-        x = self.input_norm(x)
-        
-        # Project input
+        # Project input (with normalization)
         x = self.input_projection(x)
         
         # Add positional encoding
@@ -458,7 +452,7 @@ if __name__ == '__main__':
     
     batch_size = 16
     seq_len = 60
-    input_size = 8
+    input_size = 44  # Actual number of features from data fetcher
     
     model = TemporalFusionTransformerV3EnhancedOptimized(
         input_size=input_size,
