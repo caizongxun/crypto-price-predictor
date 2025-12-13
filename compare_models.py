@@ -44,8 +44,10 @@ class ModelComparator:
         })
         self.results = []
         
-    def detect_hidden_size(self, model_path: str) -> int:
-        """Auto-detect hidden_size from model weights."""
+    def detect_model_config(self, model_path: str) -> dict:
+        """Auto-detect hidden_size and num_layers from model weights."""
+        config = {'hidden_size': None, 'num_layers': None}
+        
         try:
             checkpoint = torch.load(model_path, map_location='cpu')
             if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
@@ -53,47 +55,69 @@ class ModelComparator:
             else:
                 state_dict = checkpoint
             
-            # LSTM weight shape: [hidden_size * 4, input_or_hidden_size]
-            # First layer: lstm.weight_ih_l0 has shape [hidden_size*4, 17]
+            # Detect hidden_size from first layer
             if 'lstm.weight_ih_l0' in state_dict:
                 weight_shape = state_dict['lstm.weight_ih_l0'].shape[0]
-                hidden_size = weight_shape // 4
-                logger.debug(f"Detected hidden_size: {hidden_size}")
-                return hidden_size
+                config['hidden_size'] = weight_shape // 4
+            
+            # Detect num_layers by checking which layer indices exist
+            num_layers = 0
+            for i in range(10):  # Check up to 10 layers
+                if f'lstm.weight_ih_l{i}' in state_dict:
+                    num_layers = i + 1
+                else:
+                    break
+            config['num_layers'] = num_layers if num_layers > 0 else 2
+            
+            logger.debug(f"Detected config: hidden_size={config['hidden_size']}, num_layers={config['num_layers']}")
+            
         except Exception as e:
-            logger.debug(f"Error detecting hidden size: {e}")
+            logger.debug(f"Error detecting model config: {e}")
         
-        return None
+        return config
 
     def load_model_with_retry(self, model_path: str) -> LSTMModel:
-        """Try loading model with different configurations."""
+        """Load model with auto-detected configuration."""
         if not os.path.exists(model_path):
             return None
         
-        # First, try to auto-detect hidden size
-        detected_hidden_size = self.detect_hidden_size(model_path)
-        if detected_hidden_size:
-            model = self._create_and_load(model_path, hidden_size=detected_hidden_size)
-            if model is not None:
-                return model
-        
-        # If detection failed, try common sizes
-        for hidden_size in [128, 256, 512, 1024]:
+        # First, try to auto-detect config
+        config = self.detect_model_config(model_path)
+        if config['hidden_size'] and config['num_layers']:
             try:
-                model = self._create_and_load(model_path, hidden_size=hidden_size)
+                model = self._create_and_load(
+                    model_path,
+                    hidden_size=config['hidden_size'],
+                    num_layers=config['num_layers']
+                )
+                logger.info(f"✅ Loaded model with hidden_size={config['hidden_size']}, num_layers={config['num_layers']}")
                 return model
-            except RuntimeError:
-                continue
+            except Exception as e:
+                logger.debug(f"Auto-detected config failed: {e}")
+        
+        # Fallback: try common combinations
+        for hidden_size in [64, 128, 256, 512, 1024]:
+            for num_layers in [1, 2, 3, 4]:
+                try:
+                    model = self._create_and_load(
+                        model_path,
+                        hidden_size=hidden_size,
+                        num_layers=num_layers
+                    )
+                    logger.info(f"✅ Loaded model with hidden_size={hidden_size}, num_layers={num_layers}")
+                    return model
+                except Exception:
+                    continue
         
         logger.error(f"❌ Could not load model: {Path(model_path).name}")
         return None
 
-    def _create_and_load(self, model_path, hidden_size):
+    def _create_and_load(self, model_path, hidden_size, num_layers):
         """Helper to create and load specific model config."""
         model = LSTMModel(
             input_size=17,
             hidden_size=hidden_size,
-            num_layers=3,
+            num_layers=num_layers,
             output_size=5,
             dropout=0.3
         )
